@@ -13,7 +13,7 @@ from rl.config import DistillConfig, TrainConfig
 from rl.algorithms.perceptive_networks import PerceptiveActor, PrivilegedCritic
 from rl.algorithms.ppo import PPO
 from rl.distillation import collect_sequences, update_sequences
-from rl.run_io import append_csv, load_policy, new_run, save_checkpoint, save_json
+from rl.run_io import append_csv, deployment_config, load_policy, new_run, save_checkpoint, save_json
 
 
 def main():
@@ -56,6 +56,8 @@ def main():
     save_json(folder/'metadata.json', dict(teacher=args.teacher, parent=args.resume, status='running'))
     print(f'RUN_DIR={folder}', flush=True)
     task = Go2Task(env_config, args.device)
+    deployment = deployment_config(task)
+    save_json(folder/'deployment.json', deployment)
     visual = VisualRuntime(task, student.visual_encoder)
     began = time.monotonic()
     try:
@@ -74,9 +76,9 @@ def main():
             print(json.dumps(row), flush=True)
             if iteration % 25 == 0 or iteration == start+args.iterations:
                 save_checkpoint(folder/'checkpoints/latest.pt', agent, iteration,
-                                env_config, training, 'distill', teacher=args.teacher)
+                                env_config, training, 'distill', teacher=args.teacher, deployment=deployment)
         save_checkpoint(folder/'checkpoints/final.pt', agent, iteration,
-                        env_config, training, 'distill', teacher=args.teacher)
+                        env_config, training, 'distill', teacher=args.teacher, deployment=deployment)
         print(f'DISTILLATION_FINISHED={folder}', flush=True)
         save_json(folder/'metadata.json', dict(teacher=args.teacher, parent=args.resume,
                   status='finished', iteration=iteration))

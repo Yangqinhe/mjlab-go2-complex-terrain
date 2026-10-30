@@ -12,6 +12,9 @@ from rl.run_io import ROOT, save_json
 def run_logged(folder, name, module, arguments, marker):
     log = folder/f'{name}.log'
     command = [str(ROOT/'run.sh'), 'python', '-m', module, *map(str, arguments)]
+    state = json.loads((folder/'status.json').read_text())
+    state.update(stage=name, log=str(log))
+    save_json(folder/'status.json', state)
     print(f'STAGE={name} LOG={log}', flush=True)
     with log.open('w') as stream:
         subprocess.run(command, cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT, check=True)
@@ -42,6 +45,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--teacher-start', help='已有平地教师checkpoint，跳过平地预训练')
     parser.add_argument('--teacher-iterations', type=int, default=500)
+    parser.add_argument('--terrain-warmup-iterations', type=int, default=300)
     parser.add_argument('--teacher-rounds', type=int, default=3)
     parser.add_argument('--distill-iterations', type=int, default=200)
     parser.add_argument('--student-iterations', type=int, default=300)
@@ -63,9 +67,15 @@ def main():
         report, report_path = evaluate(folder, 'flat_eval', checkpoint)
         if not passed(report):
             raise RuntimeError(f'平地教师未达标：{report_path}')
+        warm = run_logged(folder, 'terrain_warmup', 'scripts.train_go2_ppo',
+            ['--resume', checkpoint, '--complex', '--num-envs', 2048,
+             '--step-height-min', .005, '--step-height-max', .03,
+             '--iterations', args.terrain_warmup_iterations], 'TRAINING_FINISHED')
+        checkpoint = warm/'checkpoints/final.pt'
         for index in range(args.teacher_rounds):
             teacher = run_logged(folder, f'teacher_{index}', 'scripts.train_go2_ppo',
                 ['--resume', checkpoint, '--complex', '--num-envs', 2048,
+                 '--step-height-min', .03, '--step-height-max', .09,
                  '--iterations', args.teacher_iterations, '--actor-lr', .0001,
                  '--velocity-coef', .01, '--kl-interval', 1], 'TRAINING_FINISHED')
             checkpoint = teacher/'checkpoints/final.pt'
@@ -98,7 +108,7 @@ def main():
             evaluate(folder, f'student_level_{level}', checkpoint, level=level)
         video = folder/'student_low_stairs.mp4'
         run_logged(folder, 'video', 'scripts.record_video',
-            ['--checkpoint', checkpoint, '--seeds', 10005, '--video', video], 'EVALUATION')
+            ['--checkpoint', checkpoint, '--num-envs', 1, '--seeds', 10005, '--video', video], 'EVALUATION')
         state.update(status='finished', checkpoint=str(checkpoint), evaluation=str(report_path),
                      video=str(video))
         save_json(folder/'status.json', state)

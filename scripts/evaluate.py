@@ -72,11 +72,14 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                             depth = (visual.sensor.raw_depth[0].clamp(.15, 3)/3*255).byte().cpu().numpy()
                             depth = np.repeat(np.repeat(depth, 15, 0), 15, 1)
                             frame = np.concatenate([frame, np.repeat(depth[:, :, None], 3, 2)], 1)
-                        from PIL import Image, ImageDraw
+                        from PIL import Image, ImageDraw, ImageFont
                         image = Image.fromarray(frame)
-                        ImageDraw.Draw(image).text((15, 15),
-                            f"{actor.mode} | cmd vx=0.30 | actual vx={info['velocity'][0].item():.3f} | "
-                            f"step={step} | level={level} | seed={terrain_seed}", fill=(255, 0, 0))
+                        draw = ImageDraw.Draw(image)
+                        draw.rectangle((0, 0, frame.shape[1], 48), fill=(0, 0, 0))
+                        draw.text((15, 10),
+                            f"{actor.mode} | target vx=0.30 | actual vx={info['velocity'][0].item():.3f} | "
+                            f"time={step*task.dt:.1f}s | level={level} | seed={terrain_seed}",
+                            fill=(255, 255, 255), font=ImageFont.load_default(size=24))
                         writer.append_data(np.asarray(image))
                         next_frame += 1/30
                     done = terminated | truncated

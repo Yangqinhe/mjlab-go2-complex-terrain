@@ -126,4 +126,3 @@ The long orange "a_raw [12]" route must START at the bottom border of the dashed
 
 Do not alter any text or network parameter or layout. This is one line-segment removal and connection cleanup only.
 ```
-

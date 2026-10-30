@@ -56,6 +56,10 @@ uv sync --frozen
 # 教师未通过20个独立布局的低台阶评估时，不自动启动蒸馏
 ./run.sh python -m scripts.train_pipeline
 
+# 等待指定流水线；成功后打包完整学生pt/配置/评估/视频并上传本项目GitHub Release
+# 未达标或流水线失败时停止，不上传“成功模型”
+./run.sh python -m scripts.publish_result --pipeline <outputs/pipeline目录> --wait
+
 # 单独启动教师，或从已有教师继续到复杂地形；resume会新建实验目录
 ./run.sh python -m scripts.train_go2_ppo --flat --iterations 300 --actor-lr 0.0001 --velocity-coef 0.01 --kl-interval 1
 ./run.sh python -m scripts.train_go2_ppo --resume <teacher.pt> --complex --iterations 500
@@ -67,9 +71,12 @@ uv sync --frozen
 # 确定性评估；--max-steps仅作片段诊断，会标记partial_evaluation
 ./run.sh python -m scripts.evaluate --checkpoint <checkpoint.pt> --seeds 10000 10001 10002 10003 10004
 ./run.sh python -m scripts.record_video --checkpoint <checkpoint.pt> --seeds 10005 --video <output.mp4>
+./run.sh python -m scripts.plot_training <outputs/实验目录/metrics.csv>
 ```
 
 `outputs/<时间>_<阶段>_seed42/`包含配置、地形清单、CSV、checkpoint和评估。流水线另保存各阶段stdout和`status.json`，所有训练均不启动窗口。`latest.pt`用于继续训练，`final.pt`只表示本轮结束，是否通过验收仍须查看评估。resume恢复网络/优化器/随机状态，但从新回合开始，不声称逐物理步复现。
+
+实际课程为平地→5mm–3cm低障碍过渡→正式3–9cm混合地形；进入视觉蒸馏的验收仍在正式3cm台阶完成。代码仓库：[Yangqinhe/mjlab-go2-complex-terrain（私有）](https://github.com/Yangqinhe/mjlab-go2-complex-terrain)。
 
 ## 已知限制
 

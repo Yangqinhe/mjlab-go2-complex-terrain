@@ -14,7 +14,18 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def save_json(path, value):
-    Path(path).write_text(json.dumps(value, ensure_ascii=False, indent=2)+"\n")
+    path = Path(path)
+    temporary = path.with_suffix('.json.tmp')
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2)+"\n")
+    temporary.replace(path)
+
+
+def deployment_config(task):
+    from env.perception.config import DepthConfig
+    return dict(joint_order=list(task.robot.joint_names),
+                default_joint_pos=task.robot.data.default_joint_pos[0].cpu().tolist(),
+                camera=asdict(DepthConfig()), proprio_dim=45, history_steps=10,
+                fusion_dim=176, observation_version='perceptive_176_v1')
 
 
 def new_run(stage, env_config, train_config):

@@ -11,7 +11,7 @@ from env.training_task import Go2Task
 from rl.config import TrainConfig
 from rl.algorithms.perceptive_networks import PerceptiveActor, PrivilegedCritic
 from rl.algorithms.ppo import PPO
-from rl.run_io import append_csv, env_from_dict, new_run, save_checkpoint, save_json
+from rl.run_io import append_csv, deployment_config, env_from_dict, new_run, save_checkpoint, save_json
 
 
 def main():
@@ -32,6 +32,8 @@ def main():
     parser.add_argument('--actor-lr', type=float)
     parser.add_argument('--velocity-coef', type=float)
     parser.add_argument('--kl-interval', type=int)
+    parser.add_argument('--step-height-min', type=float)
+    parser.add_argument('--step-height-max', type=float)
     args = parser.parse_args()
     torch.set_num_threads(1)
     torch.manual_seed(args.seed)
@@ -45,6 +47,10 @@ def main():
         training = TrainConfig(**saved['train_config'])
     if args.flat or args.complex:
         config.terrain.obstacles = not args.flat
+    for name in ['step_height_min', 'step_height_max']:
+        value = getattr(args, name)
+        if value is not None:
+            setattr(config.terrain, name, value)
     for name in ['actor_lr', 'velocity_coef', 'kl_interval']:
         value = getattr(args, name)
         if value is not None:
@@ -77,6 +83,8 @@ def main():
               gpu=torch.cuda.get_device_name(args.device), status='running'))
     print(f'RUN_DIR={folder}', flush=True)
     task = Go2Task(config, args.device)
+    deployment = deployment_config(task)
+    save_json(folder/'deployment.json', deployment)
     visual = None
     if mode == 'student':
         from env.perception.runtime import VisualRuntime
@@ -90,6 +98,7 @@ def main():
             statistics = torch.zeros(6, device=args.device)
             finished, success_count, fall_count, return_sum, rmse_sum = 0, 0, 0, 0., 0.
             reward_sum = torch.zeros((), device=args.device)
+            term_sums = {}
             for _ in range(training.horizon):
                 states, critic_states = task.inputs(None if visual is None else visual.latent)
                 action, sample = agent.sample_batch(states, critic_states)
@@ -99,6 +108,8 @@ def main():
                 _, next_critic = task.inputs()
                 agent.store_batch(sample, reward, terminated | truncated, terminated, next_critic)
                 reward_sum += reward.mean()
+                for name, value in info['terms'].items():
+                    term_sums[name] = term_sums.get(name, 0)+value.mean()
                 statistics += torch.stack([info['velocity'].mean(), info['error'].mean(),
                                            info['progress'].mean(), info['height'].mean(),
                                            info['terms']['slip'].mean(), info['terms']['effort'].mean()])
@@ -122,17 +133,21 @@ def main():
                        episode_return=return_sum/max(finished, 1),
                        episode_rmse=rmse_sum/max(finished, 1),
                        mean_level=task.env.scene.terrain.terrain_levels.float().mean().item(),
-                       elapsed_seconds=time.monotonic()-begin, **metrics)
+                       elapsed_seconds=time.monotonic()-begin, **metrics,
+                       **{f'reward_{key}':value.item()/training.horizon
+                          for key,value in term_sums.items()})
             append_csv(folder/'metrics.csv', row)
             with (folder/'train.log').open('a') as stream:
                 stream.write(json.dumps(row)+'\n')
             if iteration % 10 == 0 or iteration == start_iteration+1:
                 print(json.dumps(row), flush=True)
             if iteration % training.save_interval == 0 or iteration == start_iteration+args.iterations:
-                save_checkpoint(folder/'checkpoints/latest.pt', agent, iteration, config, training, args.stage)
+                save_checkpoint(folder/'checkpoints/latest.pt', agent, iteration, config, training, args.stage,
+                                deployment=deployment)
                 save_checkpoint(folder/f'checkpoints/iteration_{iteration:06d}.pt',
-                                agent, iteration, config, training, args.stage)
-        save_checkpoint(folder/'checkpoints/final.pt', agent, iteration, config, training, args.stage)
+                                agent, iteration, config, training, args.stage, deployment=deployment)
+        save_checkpoint(folder/'checkpoints/final.pt', agent, iteration, config, training, args.stage,
+                        deployment=deployment)
         print(f'TRAINING_FINISHED={folder}', flush=True)
         save_json(folder/'metadata.json', dict(parent=args.resume, device=args.device,
                   gpu=torch.cuda.get_device_name(args.device), status='finished',
