@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 
 from rl.run_io import ROOT, save_json
+from rl.config import STAIR_STAGES
 
 
 def run_logged(folder, name, module, arguments, marker):
@@ -44,6 +45,9 @@ def passed(report):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--teacher-start', help='已有平地教师checkpoint，跳过平地预训练')
+    parser.add_argument('--skip-pretraining', action='store_true', help='从复杂地形教师继续，不重复平地/低障碍课程')
+    parser.add_argument('--max-step-height', type=float, default=.20,
+                        choices=[height for height, _ in STAIR_STAGES])
     parser.add_argument('--teacher-iterations', type=int, default=500)
     parser.add_argument('--terrain-warmup-iterations', type=int, default=300)
     parser.add_argument('--teacher-rounds', type=int, default=3)
@@ -51,10 +55,15 @@ def main():
     parser.add_argument('--student-iterations', type=int, default=300)
     parser.add_argument('--student-rounds', type=int, default=3)
     args = parser.parse_args()
+    if args.skip_pretraining and not args.teacher_start:
+        parser.error('--skip-pretraining需要--teacher-start')
+    stages = [(height, scale) for height, scale in STAIR_STAGES if height <= args.max_step_height]
     folder = ROOT/'outputs'/f"{datetime.now():%Y%m%d_%H%M%S}_pipeline"
     folder.mkdir(parents=True)
     save_json(folder/'arguments.json', vars(args))
-    state = dict(status='running', folder=str(folder))
+    save_json(folder/'curriculum.json', [dict(max_step_height=h, action_scale=s,
+              levels=max(8, round((h-.03)/.01)+1)) for h,s in stages])
+    state = dict(status='running', folder=str(folder), target_step_height=args.max_step_height)
     save_json(folder/'status.json', state)
     print(f'PIPELINE_DIR={folder}', flush=True)
     try:
@@ -64,33 +73,43 @@ def main():
                 ['--flat', '--iterations', 300, '--actor-lr', .0001,
                  '--velocity-coef', .01, '--kl-interval', 1], 'TRAINING_FINISHED')
             checkpoint = warm/'checkpoints/final.pt'
-        report, report_path = evaluate(folder, 'flat_eval', checkpoint)
-        if not passed(report):
-            raise RuntimeError(f'平地教师未达标：{report_path}')
-        warm = run_logged(folder, 'terrain_warmup', 'scripts.train_go2_ppo',
-            ['--resume', checkpoint, '--complex', '--num-envs', 2048,
-             '--step-height-min', .005, '--step-height-max', .03,
-             '--iterations', args.terrain_warmup_iterations], 'TRAINING_FINISHED')
-        checkpoint = warm/'checkpoints/final.pt'
-        for index in range(args.teacher_rounds):
-            teacher = run_logged(folder, f'teacher_{index}', 'scripts.train_go2_ppo',
+        if not args.skip_pretraining:
+            report, report_path = evaluate(folder, 'flat_eval', checkpoint)
+            if not passed(report):
+                raise RuntimeError(f'平地教师未达标：{report_path}')
+            warm = run_logged(folder, 'terrain_warmup', 'scripts.train_go2_ppo',
                 ['--resume', checkpoint, '--complex', '--num-envs', 2048,
-                 '--step-height-min', .03, '--step-height-max', .09,
-                 '--iterations', args.teacher_iterations, '--actor-lr', .0001,
-                 '--velocity-coef', .01, '--kl-interval', 1], 'TRAINING_FINISHED')
-            checkpoint = teacher/'checkpoints/final.pt'
-            state['teacher'] = str(checkpoint)
-            save_json(folder/'status.json', state)
-            report, report_path = evaluate(folder, f'teacher_eval_{index}', checkpoint)
-            if passed(report):
-                break
-        else:
-            raise RuntimeError(f'复杂地形教师尚未达标，不启动蒸馏：{report_path}')
+                 '--step-height-min', .005, '--step-height-max', .03,
+                 '--iterations', args.terrain_warmup_iterations], 'TRAINING_FINISHED')
+            checkpoint = warm/'checkpoints/final.pt'
+        for cap, scale in stages:
+            levels = max(8, round((cap-.03)/.01)+1)
+            label = f'{round(cap*100):02d}cm'
+            for index in range(args.teacher_rounds):
+                teacher = run_logged(folder, f'teacher_{label}_{index}', 'scripts.train_go2_ppo',
+                    ['--resume', checkpoint, '--complex', '--num-envs', 2048, '--levels', levels,
+                     '--step-height-min', .03, '--step-height-max', cap, '--action-scale', scale,
+                     '--height-scan-clip', 2 if cap > .125 else 1,
+                     '--iterations', args.teacher_iterations, '--actor-lr', .0001,
+                     '--velocity-coef', .01, '--kl-interval', 1], 'TRAINING_FINISHED')
+                checkpoint = teacher/'checkpoints/final.pt'
+                state.update(teacher=str(checkpoint), training_step_height=cap)
+                save_json(folder/'status.json', state)
+                low, low_path = evaluate(folder, f'teacher_{label}_low_{index}', checkpoint)
+                high, high_path = evaluate(folder, f'teacher_{label}_high_{index}', checkpoint, levels-1)
+                if passed(low) and passed(high):
+                    state['validated_teacher_step_height'] = cap
+                    save_json(folder/'status.json', state)
+                    break
+            else:
+                raise RuntimeError(f'{label}教师未达标，不升难度、不启动蒸馏：{low_path}, {high_path}')
         student = run_logged(folder, 'distill', 'scripts.distill_student',
             ['--teacher', checkpoint, '--num-envs', 256,
              '--iterations', args.distill_iterations], 'DISTILLATION_FINISHED')
         checkpoint = student/'checkpoints/final.pt'
         evaluate(folder, 'distill_eval', checkpoint)
+        validation_levels = sorted({0, *[round((height-.03)/(args.max_step_height-.03)*(levels-1))
+                                         for height, _ in stages]})
         for index in range(args.student_rounds):
             student = run_logged(folder, f'student_{index}', 'scripts.train_go2_ppo',
                 ['--stage', 'student_ppo', '--resume', checkpoint, '--num-envs', 256,
@@ -98,14 +117,18 @@ def main():
             checkpoint = student/'checkpoints/final.pt'
             state['student'] = str(checkpoint)
             save_json(folder/'status.json', state)
-            report, report_path = evaluate(folder, f'student_eval_{index}', checkpoint)
-            if passed(report):
+            reports = []
+            for level in validation_levels:
+                report, path = evaluate(folder, f'student_level_{level}_round_{index}', checkpoint, level)
+                reports.append(str(path))
+                if not passed(report):
+                    break
+            else:
+                state['height_evaluations'] = reports
+                report_path = reports[0]
                 break
         else:
-            raise RuntimeError(f'视觉学生尚未达标：{report_path}')
-        # 独立报告中高难度结果，不能用低台阶的通过率代表全部地形。
-        for level in [3, 7]:
-            evaluate(folder, f'student_level_{level}', checkpoint, level=level)
+            raise RuntimeError(f'视觉学生全高度验收尚未达标：{path}')
         video = folder/'student_low_stairs.mp4'
         run_logged(folder, 'video', 'scripts.record_video',
             ['--checkpoint', checkpoint, '--num-envs', 1, '--seeds', 10005, '--video', video], 'EVALUATION')

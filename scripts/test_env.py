@@ -68,7 +68,7 @@ def inspect_terrain(env, config):
         if name.startswith("course_"):
             geometry.append({"name": name, "world_position": data.geom_xpos[index].tolist(),
                              "half_size": model.geom_size[index].tolist()})
-    assert len(geometry) == course.levels * (
+    assert len(geometry) == course.levels * course.layouts * (
         1 + 2 * course.step_count - 1 + 1 + course.rubble_rows*course.rubble_columns
     ), "Unexpected mixed terrain geometry count"
     return {"config": asdict(course), "origins": origins.tolist(), "rays": rays,
@@ -79,6 +79,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--num-envs", type=int, default=1)
     parser.add_argument("--steps", type=int, default=200)
+    parser.add_argument("--levels", type=int, default=3)
+    parser.add_argument("--layouts", type=int, default=1)
+    parser.add_argument("--step-height-max", type=float, default=.09)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--level", type=int, default=0, help="初始最高地形等级（从 0 开始）")
     parser.add_argument("--render", action="store_true", help="离屏导出总览和机器人近景 PNG")
@@ -90,6 +93,8 @@ def main():
         raise RuntimeError("CUDA 不可用；CPU 验证请显式指定 --device cpu")
     config = EnvConfig(num_envs=args.num_envs)
     config.terrain.initial_level = args.level
+    config.terrain.levels, config.terrain.layouts = args.levels, args.layouts
+    config.terrain.step_height_max = args.step_height_max
     stamp = datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y%m%d_%H%M%S_%f")
     output = PROJECT_ROOT / "outputs" / f"{stamp}_load_env_seed{config.seed}"
     output.mkdir(parents=True)
@@ -191,7 +196,10 @@ def save_previews(env, config, data, output):
     origin = env.scene.env_origins[0].cpu().numpy()
     model = copy.copy(env.sim.mj_model)
     level = int(env.scene.terrain.terrain_levels[0])
-    active_prefix = f"course_{round(level/(config.terrain.levels-1)*1000):04d}_"
+    active_prefix = f"course_{round(level/(config.terrain.levels-1)*1000):04d}"
+    if config.terrain.layouts > 1:
+        active_prefix += f"_v{int(env.scene.terrain.terrain_types[0])}"
+    active_prefix += "_"
     # 仅在渲染副本中隐藏其他难度路线，防止画面被相邻地块干扰。
     for index in range(model.ngeom):
         name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, index) or ""

@@ -28,6 +28,9 @@ class TrainingRewardConfig:
     joint_limit: float = -1.
     slip: float = -.2
     collision: float = -.5
+    foot_clearance: float = -5.
+    swing_clearance: float = .03
+    lookahead_distance: float = .20
     success: float = 5.
     failure: float = -1.
     nominal_height: float = .27
@@ -44,6 +47,7 @@ class EnvConfig:
     kp: float = 40.0
     kd: float = 2.0
     action_scale: float = 0.5
+    height_scan_clip: float = 1.0
     base_height: float = 0.30
     tracking_weight: float = 1.5
     tracking_error_scale: float = 0.1

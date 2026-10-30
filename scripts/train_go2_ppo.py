@@ -11,7 +11,8 @@ from env.training_task import Go2Task
 from rl.config import TrainConfig
 from rl.algorithms.perceptive_networks import PerceptiveActor, PrivilegedCritic
 from rl.algorithms.ppo import PPO
-from rl.run_io import append_csv, deployment_config, env_from_dict, new_run, save_checkpoint, save_json
+from rl.run_io import (append_csv, deployment_config, env_from_dict, new_run,
+                       restore_curriculum, save_checkpoint, save_json)
 
 
 def main():
@@ -21,8 +22,8 @@ def main():
     parser.add_argument('--iterations', type=int, default=500)
     parser.add_argument('--resume')
     parser.add_argument('--device', default='cuda:0')
-    parser.add_argument('--levels', type=int, default=8)
-    parser.add_argument('--layouts', type=int, default=4)
+    parser.add_argument('--levels', type=int)
+    parser.add_argument('--layouts', type=int)
     parser.add_argument('--horizon', type=int, default=32)
     parser.add_argument('--batch-size', type=int, default=1024)
     parser.add_argument('--seed', type=int, default=42)
@@ -34,11 +35,13 @@ def main():
     parser.add_argument('--kl-interval', type=int)
     parser.add_argument('--step-height-min', type=float)
     parser.add_argument('--step-height-max', type=float)
+    parser.add_argument('--action-scale', type=float)
+    parser.add_argument('--height-scan-clip', type=float)
     args = parser.parse_args()
     torch.set_num_threads(1)
     torch.manual_seed(args.seed)
     config = EnvConfig(num_envs=args.num_envs, seed=args.seed)
-    config.terrain.levels, config.terrain.layouts = args.levels, args.layouts
+    config.terrain.levels, config.terrain.layouts = args.levels or 8, args.layouts or 4
     training = TrainConfig(horizon=args.horizon, batch_size=args.batch_size)
     saved = torch.load(args.resume, map_location=args.device, weights_only=False) if args.resume else None
     if saved:
@@ -47,10 +50,14 @@ def main():
         training = TrainConfig(**saved['train_config'])
     if args.flat or args.complex:
         config.terrain.obstacles = not args.flat
-    for name in ['step_height_min', 'step_height_max']:
+    for name in ['step_height_min', 'step_height_max', 'levels', 'layouts']:
         value = getattr(args, name)
         if value is not None:
             setattr(config.terrain, name, value)
+    for name in ['action_scale', 'height_scan_clip']:
+        value = getattr(args, name)
+        if value is not None:
+            setattr(config, name, value)
     for name in ['actor_lr', 'velocity_coef', 'kl_interval']:
         value = getattr(args, name)
         if value is not None:
@@ -83,6 +90,7 @@ def main():
               gpu=torch.cuda.get_device_name(args.device), status='running'))
     print(f'RUN_DIR={folder}', flush=True)
     task = Go2Task(config, args.device)
+    restore_curriculum(task, saved)
     deployment = deployment_config(task)
     save_json(folder/'deployment.json', deployment)
     visual = None
@@ -143,11 +151,11 @@ def main():
                 print(json.dumps(row), flush=True)
             if iteration % training.save_interval == 0 or iteration == start_iteration+args.iterations:
                 save_checkpoint(folder/'checkpoints/latest.pt', agent, iteration, config, training, args.stage,
-                                deployment=deployment)
+                                deployment=deployment, task=task)
                 save_checkpoint(folder/f'checkpoints/iteration_{iteration:06d}.pt',
-                                agent, iteration, config, training, args.stage, deployment=deployment)
+                                agent, iteration, config, training, args.stage, deployment=deployment, task=task)
         save_checkpoint(folder/'checkpoints/final.pt', agent, iteration, config, training, args.stage,
-                        deployment=deployment)
+                        deployment=deployment, task=task)
         print(f'TRAINING_FINISHED={folder}', flush=True)
         save_json(folder/'metadata.json', dict(parent=args.resume, device=args.device,
                   gpu=torch.cuda.get_device_name(args.device), status='finished',

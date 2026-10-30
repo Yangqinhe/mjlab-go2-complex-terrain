@@ -42,6 +42,8 @@ class Go2Task:
         self.ground = HeightQuery(self.env, config.terrain)
         self.foot_ids = [self.env.sim.mj_model.geom(f"robot/{leg}").id
                          for leg in ("FL", "FR", "RL", "RR")]
+        self.foot_radius = torch.tensor(self.env.sim.mj_model.geom_size[self.foot_ids, 0],
+                                       device=device, dtype=torch.float32)
         names = self.env.scene["feet"].primary_names
         self.foot_order = [list(names).index(leg) for leg in ("FL", "FR", "RL", "RR")]
         self.calf_ids, _ = self.robot.find_bodies([f"{leg}_calf" for leg in ("FL", "FR", "RL", "RR")])
@@ -75,9 +77,11 @@ class Go2Task:
         c, s = yaw.cos()[:, None], yaw.sin()[:, None]
         xy = torch.stack([c*self.scan_xy[:, 0]-s*self.scan_xy[:, 1],
                           s*self.scan_xy[:, 0]+c*self.scan_xy[:, 1]], -1)+pos[:, None, :2]
-        heights = ((self.ground(xy)-(pos[:, 2:3]-.27))/.5).clamp(-1, 1)
+        # 20cm×4级可累计0.8m；高阶允许±2，避免把高处台阶统一截成同一高度。
+        clip = self.config.height_scan_clip
+        heights = ((self.ground(xy)-(pos[:, 2:3]-.27))/.5).clamp(-clip, clip)
         feet = self.env.sim.data.geom_xpos[:, self.foot_ids]
-        foot_height = feet[:, :, 2]-self.ground(feet[:, :, :2])
+        foot_height = feet[:, :, 2]-self.ground(feet[:, :, :2]).clamp(min=0)
         contact = self.env.scene["feet"].data.force[:, self.foot_order, 2].abs()>1
         progress = ((pos[:, 0]-self.env.scene.env_origins[:, 0]) /
                     (self.config.terrain.length-self.config.terrain.spawn_x)).clamp(-1, 1)
@@ -112,7 +116,9 @@ class Go2Task:
         r = self.robot.data
         feet = self.env.sim.data.geom_xpos[:, self.foot_ids]
         contact = self.env.scene["feet"].data.force[:, self.foot_order, 2].abs()>1
-        ground = self.ground(feet[:, :, :2])
+        raw_ground = self.ground(feet[:, :, :2])
+        # 真正离开整张地图时不把-10缺失哨兵当支撑面；越界由body位置终止。
+        ground = raw_ground.clamp(min=0)
         support = (ground*contact).sum(-1)/contact.sum(-1).clamp(min=1)
         support = torch.where(contact.any(-1), support, ground.median(-1).values)
         height = r.root_link_pos_w[:, 2]-support
@@ -129,6 +135,13 @@ class Go2Task:
                        (r.joint_pos-limits[:, :, 1]).clamp(min=0)).square().sum(-1)
         collision = self.env.scene["nonfoot"].data.force.norm(dim=-1).amax(-1)>10
         w = self.weights
+        # 移动足应越过前方台阶；静止支撑足速度近零，不强制腾空或指定步态相位。
+        ahead = feet[:, :, :2].clone()
+        ahead[:, :, 0] += w.lookahead_distance
+        target = w.swing_clearance+(self.ground(ahead)-ground).clamp(0, .25)
+        clearance = feet[:, :, 2]-ground-self.foot_radius
+        moving = foot_velocity[:, :, :2].norm(dim=-1).sqrt()
+        clearance_error = ((clearance-target).square()*moving*(raw_ground > -1)).sum(-1)
         terms = {
             "tracking_xy": w.tracking_xy*torch.exp(-error/self.config.tracking_error_scale),
             "tracking_yaw": w.tracking_yaw*torch.exp(-(angular[:, 2]-command[:, 2]).square()/.25),
@@ -140,6 +153,7 @@ class Go2Task:
             "effort": w.effort*self.env.control_effort/self.config.decimation,
             "action_rate": w.action_rate*action_rate, "joint_limit": w.joint_limit*limit_error,
             "slip": w.slip*slip, "collision": w.collision*collision.float(),
+            "foot_clearance": w.foot_clearance*clearance_error,
         }
         pos = r.root_link_pos_w-self.env.scene.env_origins
         local_x = pos[:, 0]+self.config.terrain.spawn_x

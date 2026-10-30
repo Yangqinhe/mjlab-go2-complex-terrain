@@ -12,6 +12,7 @@ from datetime import datetime
 import torch
 
 from rl.run_io import ROOT, save_json
+from rl.config import STAIR_STAGES
 
 
 def main():
@@ -36,6 +37,18 @@ def main():
             or report['success_rate'] < .8 or report['vx_rmse'] > .1
             or Path(report['checkpoint']).resolve() != checkpoint.resolve()):
         raise RuntimeError('学生权重与独立评估未满足发布条件')
+    height_paths = state.get('height_evaluations', [])
+    height_reports = [json.loads(Path(path).read_text()) for path in height_paths]
+    target = state.get('target_step_height', saved['env_config']['terrain']['step_height_max'])
+    required = {.03, *[height for height, _ in STAIR_STAGES if height <= target]}
+    verified = {round(r['stair_height'], 4) for r in height_reports}
+    if (not height_reports or max(r['stair_height'] for r in height_reports) < target-1e-6
+            or not required.issubset(verified)
+            or any(r['partial_evaluation'] or r['unique_layouts'] < 20
+                   or r['success_rate'] < .8 or r['vx_rmse'] > .1
+                   or Path(r['checkpoint']).resolve() != checkpoint.resolve()
+                   for r in height_reports)):
+        raise RuntimeError('目标最高台阶及分高度评估尚未全部通过，不发布最终权重')
     delivery = folder/'delivery'
     delivery.mkdir(exist_ok=True)
     shutil.copyfile(checkpoint, delivery/'student_final.pt')
@@ -55,10 +68,8 @@ def main():
     if not json.loads(Path(video_report_path).read_text())['records'][0]['success']:
         raise RuntimeError('单环境录像重放未成功，保留报告但不发布成功视频')
     shutil.copyfile(video_report_path, delivery/'video_evaluation.json')
-    for log in folder.glob('student_level_*.log'):
-        for line in log.read_text().splitlines():
-            if line.startswith('EVALUATION='):
-                shutil.copyfile(line.split('=', 1)[1], delivery/f'{log.stem}.json')
+    for path, height_report in zip(height_paths, height_reports):
+        shutil.copyfile(path, delivery/f"student_height_{round(height_report['stair_height']*100):02d}cm.json")
     subprocess.run([str(ROOT/'run.sh'), 'python', '-m', 'scripts.plot_training',
                     str(checkpoint.parent.parent/'metrics.csv')], cwd=ROOT, check=True)
     shutil.copyfile(checkpoint.parent.parent/'training_curves.png', delivery/'training_curves.png')
@@ -72,10 +83,11 @@ def main():
     notes = folder/'release_notes.md'
     notes.write_text(
         '# Go2 176维视觉本体策略\n\n'
-        f"固定vx=0.3m/s；独立低台阶混合路线{report['unique_layouts']}个布局，"
+        f"固定vx=0.3m/s；单级最高{target*100:.0f}cm，各验收高度均通过独立完整回合评估。\n\n"
+        f"其中低台阶混合路线{report['unique_layouts']}个布局，"
         f"通过率{report['success_rate']:.1%}，vx RMSE={report['vx_rmse']:.4f}m/s。\n\n"
-        '包含平地、上下楼梯、静态碎石。中高台阶结果单独附JSON，'
-        '不以低台阶通过率代表全部高度。域随机化关闭，尚未经实机验证。\n\n'
+        '包含平地、上下楼梯、静态碎石。所有验收高度结果单独附JSON，'
+        '域随机化关闭，尚未经实机验证。\n\n'
         '附件包含完整学生checkpoint、配置、关节/相机定义、独立评估、训练曲线、视频和SHA256。'
         f'网络版本perceptive_176_v1，源码提交{revision}。\n')
     if args.prepare_only:

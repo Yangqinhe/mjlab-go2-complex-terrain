@@ -13,7 +13,8 @@ from rl.config import DistillConfig, TrainConfig
 from rl.algorithms.perceptive_networks import PerceptiveActor, PrivilegedCritic
 from rl.algorithms.ppo import PPO
 from rl.distillation import collect_sequences, update_sequences
-from rl.run_io import append_csv, deployment_config, load_policy, new_run, save_checkpoint, save_json
+from rl.run_io import (append_csv, deployment_config, load_policy, new_run,
+                       restore_curriculum, save_checkpoint, save_json)
 
 
 def main():
@@ -46,16 +47,19 @@ def main():
         dict(params=common, lr=config.common_lr),
     ])
     start = 0
+    curriculum_saved = checkpoint
     if args.resume:
         saved = torch.load(args.resume, map_location=args.device, weights_only=False)
         student.load_state_dict(saved['actor'])
         agent.actor_optimizer.load_state_dict(saved['actor_optimizer'])
         start = saved['iteration']
+        curriculum_saved = saved
     folder = new_run('distill', env_config, training)
     save_json(folder/'distillation.json', asdict(config))
     save_json(folder/'metadata.json', dict(teacher=args.teacher, parent=args.resume, status='running'))
     print(f'RUN_DIR={folder}', flush=True)
     task = Go2Task(env_config, args.device)
+    restore_curriculum(task, curriculum_saved)
     deployment = deployment_config(task)
     save_json(folder/'deployment.json', deployment)
     visual = VisualRuntime(task, student.visual_encoder)
@@ -76,9 +80,11 @@ def main():
             print(json.dumps(row), flush=True)
             if iteration % 25 == 0 or iteration == start+args.iterations:
                 save_checkpoint(folder/'checkpoints/latest.pt', agent, iteration,
-                                env_config, training, 'distill', teacher=args.teacher, deployment=deployment)
+                                env_config, training, 'distill', teacher=args.teacher,
+                                deployment=deployment, task=task)
         save_checkpoint(folder/'checkpoints/final.pt', agent, iteration,
-                        env_config, training, 'distill', teacher=args.teacher, deployment=deployment)
+                        env_config, training, 'distill', teacher=args.teacher,
+                        deployment=deployment, task=task)
         print(f'DISTILLATION_FINISHED={folder}', flush=True)
         save_json(folder/'metadata.json', dict(teacher=args.teacher, parent=args.resume,
                   status='finished', iteration=iteration))

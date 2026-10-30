@@ -1,7 +1,10 @@
 """只核对易错的GAE边界、超时bootstrap、批量shape和局部reset。"""
 
 import json
+from dataclasses import asdict
 
+import mujoco
+import numpy as np
 import torch
 
 from env.config import EnvConfig
@@ -9,6 +12,7 @@ from env.training_task import Go2Task
 from rl.algorithms.ppo import PPO
 from rl.algorithms.perceptive_networks import PerceptiveActor, PrivilegedCritic
 from rl.config import TrainConfig
+from rl.run_io import restore_curriculum
 
 
 def main():
@@ -26,8 +30,22 @@ def main():
     td = 1+agent.gamma*torch.tensor([5., 5.], device='cuda:0')*(1-terminal)
     assert torch.allclose(td, torch.tensor([1., 1+agent.gamma*5], device='cuda:0'))
     env_config = EnvConfig(num_envs=4, episode_seconds=.04)
+    env_config.terrain.layouts = 4
+    env_config.terrain.initial_level = 2
     task = Go2Task(env_config, curriculum=False)
     try:
+        # 跨过分配地块边缘后，邻块真实地面不能被当成-10m的空洞。
+        xy = task.env.scene.env_origins[:, None, :2].clone()
+        xy[:, :, 1] += 1.6
+        height = task.ground(xy).flatten().cpu().numpy()
+        model = task.env.sim.mj_model
+        cpu = mujoco.MjData(model)
+        mujoco.mj_forward(model, cpu)
+        for index, point in enumerate(xy[:, 0].cpu().numpy()):
+            ray = mujoco.mj_ray(model, cpu, np.array([*point, 2.]),
+                np.array([0., 0., -1.]), np.array([1, 0, 0, 0, 0, 0], dtype=np.uint8),
+                1, -1, np.zeros(1, dtype=np.int32))
+            assert abs(height[index]-(2-ray if ray >= 0 else -10)) < 1e-5
         for _ in range(2):
             states, critic = task.inputs()
             action, sample = agent.sample_batch(states, critic)
@@ -42,8 +60,14 @@ def main():
         assert task.env.episode_length_buf[1] == 2
         metrics = agent.update_batch()
         assert all(torch.isfinite(torch.tensor(value)) for value in metrics.values())
+        old_levels = task.env.scene.terrain.terrain_levels.clone()
+        saved = dict(env_config=asdict(env_config), curriculum_levels=old_levels)
+        task.env.scene.terrain.terrain_levels.zero_()
+        restore_curriculum(task, saved)
+        assert torch.equal(task.env.scene.terrain.terrain_levels, old_levels)
         print(json.dumps(dict(status='passed', gae_masks=True, timeout_bootstrap=True,
-                              reset_isolation=True, ppo_update=metrics)), flush=True)
+                              reset_isolation=True, neighbor_ground=True,
+                              curriculum_restore=True, ppo_update=metrics)), flush=True)
     finally:
         task.close()
 

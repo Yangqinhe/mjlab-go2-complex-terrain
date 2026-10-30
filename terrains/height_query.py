@@ -18,6 +18,7 @@ class HeightQuery:
                 table.append(np.c_[positions[:, :2]-sizes[:, :2],
                                    positions[:, :2]+sizes[:, :2], positions[:, 2]+sizes[:, 2]])
         self.boxes = torch.tensor(np.stack(table), device=env.device, dtype=torch.float32)
+        self.all_boxes = self.boxes.flatten(0, 1)
         self.terrain = env.scene.terrain
         self.layouts = config.layouts
 
@@ -26,4 +27,16 @@ class HeightQuery:
         boxes = self.boxes[indices]
         inside = ((xy[:, :, None] >= boxes[:, None, :, :2]) &
                   (xy[:, :, None] <= boxes[:, None, :, 2:4])).all(-1)
-        return boxes[:, None, :, 4].expand_as(inside).masked_fill(~inside, -10.).amax(-1)
+        height = boxes[:, None, :, 4].expand_as(inside).masked_fill(~inside, -10.).amax(-1)
+        missing = height < -1
+        if missing.any():
+            # 地图块相邻：足端/扫描点可跨过本块边界，仍应匹配实际存在的相邻碰撞体。
+            points = xy[missing]
+            values = []
+            for chunk in points.split(1024):
+                match = ((chunk[:, None] >= self.all_boxes[None, :, :2]) &
+                         (chunk[:, None] <= self.all_boxes[None, :, 2:4])).all(-1)
+                values.append(self.all_boxes[None, :, 4].expand_as(match)
+                              .masked_fill(~match, -10.).amax(-1))
+            height[missing] = torch.cat(values)
+        return height

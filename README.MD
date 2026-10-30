@@ -1,5 +1,7 @@
 # Go2 复杂地形 GPU 并行强化学习
 
+后期目标已扩展为**单级台阶最高20cm**，当前仍在基础复杂地形训练，未宣称已通过20cm。[高台阶课程与实际进展](docs/高台阶20cm课程与训练记录.md)记录逐档参数、验收和当前运行目录。
+
 目标：基于 mjlab / MuJoCo Warp 构建 Go2 复杂地形环境，沿用已有自写 PPO，支持无窗口训练、训练后评估和 PPT 视频导出。每个正式任务环境包含平地、上楼梯、下楼梯、碎石的连续混合路线，楼梯高度按配置和难度变化。
 
 `terrains/` 管理同一场景中的连续混合地形，`domain_randomization/` 预留后期域随机化，当前关闭。固定速度指令为机体系 `[vx, vy, wz] = [0.3, 0, 0]`。
@@ -56,6 +58,9 @@ uv sync --frozen
 # 教师未通过20个独立布局的低台阶评估时，不自动启动蒸馏
 ./run.sh python -m scripts.train_pipeline
 
+# 从已有复杂地形教师继续，跳过已完成的平地/低障碍阶段，逐档训练到20cm目标
+./run.sh python -m scripts.train_pipeline --teacher-start <teacher.pt> --skip-pretraining --max-step-height 0.20
+
 # 等待指定流水线；成功后打包完整学生pt/配置/评估/视频并上传本项目GitHub Release
 # 未达标或流水线失败时停止，不上传“成功模型”
 ./run.sh python -m scripts.publish_result --pipeline <outputs/pipeline目录> --wait
@@ -76,10 +81,10 @@ uv sync --frozen
 
 `outputs/<时间>_<阶段>_seed42/`包含配置、地形清单、CSV、checkpoint和评估。流水线另保存各阶段stdout和`status.json`，所有训练均不启动窗口。`latest.pt`用于继续训练，`final.pt`只表示本轮结束，是否通过验收仍须查看评估。resume恢复网络/优化器/随机状态，但从新回合开始，不声称逐物理步复现。
 
-实际课程为平地→5mm–3cm低障碍过渡→正式3–9cm混合地形；进入视觉蒸馏的验收仍在正式3cm台阶完成。代码仓库：[Yangqinhe/mjlab-go2-complex-terrain（私有）](https://github.com/Yangqinhe/mjlab-go2-complex-terrain)。
+实际课程为平地→5mm–3cm过渡→上限9/12/15/18/20cm五档。每档同时通过3cm和该档最高台阶评估才升档；教师完成目标档后再蒸馏，学生按3/9/12/15/18/20cm逐档验收。各档动作尺度、关节限位和训练目标分别保存。代码仓库：[Yangqinhe/mjlab-go2-complex-terrain（私有）](https://github.com/Yangqinhe/mjlab-go2-complex-terrain)。
 
 ## 已知限制
 
-当前深度为静态地形射线，只渲染地形碰撞组，不包含机器人自遮挡、真实相机噪声和延迟；域随机化关闭。布局变化主要是碎石位置/尺寸，台阶高度为8档3–9cm。尚不能据此宣称Sim2Real或高难地形成功。48/58/历史178维旧权重均不兼容当前`perceptive_176_v1`。
+当前深度为静态地形射线，只渲染地形碰撞组，不包含机器人自遮挡、真实相机噪声和延迟；域随机化关闭。布局变化主要是碎石位置/尺寸。基础地形8档3–9cm；目标档18档3–20cm的场景已通过加载检查，行走能力须另行验收。48/58/历史178维旧权重均不兼容当前`perceptive_176_v1`。
 
 加载时为 MJWarp 适配替换执行器、清零 margin，并用场景配置统一接触参数；磁盘原 XML 保留。后端对部分 cylinder 碰撞组合会提示最多生成单接触点，这属于当前后端支持范围，后续训练前应结合行为评估，不能据此声称接触与旧 MuJoCo 完全一致。

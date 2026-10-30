@@ -3,6 +3,10 @@
 from dataclasses import dataclass
 
 
+# 台阶上限(m)、关节目标偏移尺度(rad)；前置档通过后才进入下一档。
+STAIR_STAGES = ((.09, .5), (.12, .6), (.15, .7), (.18, .8), (.20, .9))
+
+
 @dataclass
 class TrainConfig:
     horizon: int = 32

@@ -44,7 +44,25 @@ def new_run(stage, env_config, train_config):
     return path
 
 
-def save_checkpoint(path, agent, iteration, env_config, train_config, stage, **extra):
+def restore_curriculum(task, saved):
+    if not saved or 'curriculum_levels' not in saved:
+        return
+    old = saved['env_config']['terrain']
+    if not old.get('obstacles', True) or not task.config.terrain.obstacles:
+        return  # 平地的虚拟等级不对应实际台阶高度。
+    levels = saved['curriculum_levels'].to(task.device).float()
+    height = old['step_height_min']+levels/(old['levels']-1)*(old['step_height_max']-old['step_height_min'])
+    indices = torch.linspace(0, len(height)-1, task.config.num_envs, device=task.device).long()
+    course = task.config.terrain
+    new_levels = ((height[indices]-course.step_height_min)/(course.step_height_max-course.step_height_min)
+                  *(course.levels-1)).round().long().clamp(0, course.levels-1)
+    terrain = task.env.scene.terrain
+    terrain.terrain_levels[:] = new_levels
+    terrain.env_origins[:] = terrain.terrain_origins[new_levels, terrain.terrain_types]
+    task.reset()
+
+
+def save_checkpoint(path, agent, iteration, env_config, train_config, stage, task=None, **extra):
     payload = dict(format_version=3, observation_version='perceptive_176_v1',
                    network_version='depth48x64_gru128_fusion176_v1', stage=stage,
                    iteration=iteration, env_config=asdict(env_config),
@@ -52,6 +70,8 @@ def save_checkpoint(path, agent, iteration, env_config, train_config, stage, **e
                    critic=agent.critic.state_dict(), actor_optimizer=agent.actor_optimizer.state_dict(),
                    critic_optimizer=agent.critic_optimizer.state_dict(),
                    torch_rng=torch.get_rng_state(), cuda_rng=torch.cuda.get_rng_state_all(), **extra)
+    if task is not None:
+        payload['curriculum_levels'] = task.env.scene.terrain.terrain_levels.cpu()
     path = Path(path)
     temporary = path.with_suffix('.tmp')
     torch.save(payload, temporary)
