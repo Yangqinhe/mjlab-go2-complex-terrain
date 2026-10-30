@@ -1,0 +1,78 @@
+# Go2 复杂地形 GPU 并行强化学习
+
+目标：基于 mjlab / MuJoCo Warp 构建 Go2 复杂地形环境，沿用已有自写 PPO，支持无窗口训练、训练后评估和 PPT 视频导出。每个正式任务环境包含平地、上楼梯、下楼梯、碎石的连续混合路线，楼梯高度按配置和难度变化。
+
+`terrains/` 管理同一场景中的连续混合地形，`domain_randomization/` 预留后期域随机化，当前关闭。固定速度指令为机体系 `[vx, vy, wz] = [0.3, 0, 0]`。
+
+## 当前可运行内容
+
+已接入自写 PPO 的批量训练、176维教师/视觉学生网络、48×64双帧深度、顺序蒸馏、评估和离屏录像。教师以2048环境训练，视觉阶段默认256环境；具体行为是否达标以独立评估JSON为准，训练reward不能代替通过率。当前运行记录见[训练实施与运行记录](docs/训练实施与运行记录.md)。
+
+训练输入为45维本体及历史，不使用旧加载测试的48维观测。学生融合：当前本体45 + 本体历史特征64 + 深度CNN/GRU特征64 + 估计速度3 = 176；输出12维关节位置偏移。没有age/valid特征。
+
+```bash
+cd /home/user/Documents/YQH/工作/强化学习实验/mujoco_go2/mjlab_project_go2_complex_terrain
+
+# 独立环境；当前机器已安装，换机器时按锁文件安装
+uv sync --frozen
+
+# 固定 vx=0.3，单环境 GPU 加载与步进，离屏导出两张场景图
+./run.sh python -m scripts.test_env --num-envs 1 --steps 200 --render
+
+# 16 个环境，允许初始分配到三档难度，默认无窗口
+./run.sh python -m scripts.test_env --num-envs 16 --level 2 --steps 200
+
+# 2048 个独立 Go2 世界，复用三档静态地形几何，机器人状态彼此独立
+./run.sh python -m scripts.test_env --num-envs 2048 --level 2 --steps 200
+
+# 有图形桌面时可打开窗口（本次仅验证了离屏渲染）
+./run.sh python -m scripts.test_env --viewer
+```
+
+`run.sh` 默认按 UUID 选择本机 RTX 3070；换机器时设置对应 `CUDA_VISIBLE_DEVICES`。核心环境只接收 `device`，不依赖个人路径或原项目目录。无需自动降级到 CPU；如需 CPU 调试，可显式传 `--device cpu`，本次未测试此路径。
+
+测试输出位于 `outputs/<时间>_load_env_seed42/`，包括配置、地形清单、检查报告及可选 PNG。当前混合路线为平地 → 上楼梯 → 平台 → 下楼梯 → 过渡 → 静态碎石 → 终点；三档单级台阶高度为 3/6/9 cm。`--level` 为初始最高难度，不是强制所有环境使用该等级。
+
+路线尺寸 13.7 m × 3 m 是每台机器人可走的单条路线，不是将 2048 台机器人放入同一个物理世界。2048 环境测试各 200 步耗时约 3.27 秒、检测到 8192 个 Warp 接触、无 reset。正式 PPO 显存与吞吐仍需接入算法后测量，三档路线也需进一步扩展多样性，详见阶段方案第 10 节。
+
+## 方案与约定
+
+- [文件格式与代码风格要求](docs/文件格式.md)
+- [方案设计](docs/方案设计.md)：独立地形目录、单环境混合路线、可变台阶高度、域随机化预留、参数管理、PPO 迁移、录像、代码风格与 GitHub 交付。
+- [固定速度行走：环境与地形加载方案](docs/固定速度行走_环境与地形加载方案.md)：本阶段的实际文件、接口、运行命令与后续训练边界。
+- [视觉与本体感知融合：176维实施方案（当前版）](docs/视觉与本体感知融合_176维实施方案.md)：已获批准实施，四路176维融合与12关节输出。
+- [旧178维技术方案（历史记录）](docs/视觉与本体感知融合_技术设计与实施方案.md)：已被176维方案取代，不再作为实施依据。
+- [旧178维网络图说明（历史记录）](docs/视觉本体融合网络图说明.md)：PNG尚未重绘，其中帧状态和178维融合不适用于当前方案。
+- [变更记录](CHANGELOG.MD)
+
+## 训练与评估
+
+```bash
+# 最小检查：GAE/超时bootstrap/重置隔离；深度标定/调度/网络维度
+./run.sh python -m scripts.test_training
+./run.sh python -m scripts.test_perception
+
+# 全流程：平地教师 → 混合地形教师 → 蒸馏 → 冻结视觉PPO → 评估与录像
+# 教师未通过20个独立布局的低台阶评估时，不自动启动蒸馏
+./run.sh python -m scripts.train_pipeline
+
+# 单独启动教师，或从已有教师继续到复杂地形；resume会新建实验目录
+./run.sh python -m scripts.train_go2_ppo --flat --iterations 300 --actor-lr 0.0001 --velocity-coef 0.01 --kl-interval 1
+./run.sh python -m scripts.train_go2_ppo --resume <teacher.pt> --complex --iterations 500
+
+# 视觉蒸馏前50轮冻结公共网络，150轮后完全由学生控制；建议至少200轮
+./run.sh python -m scripts.distill_student --teacher <qualified_teacher.pt> --iterations 200
+./run.sh python -m scripts.train_go2_ppo --stage student_ppo --resume <student.pt> --num-envs 256 --iterations 300
+
+# 确定性评估；--max-steps仅作片段诊断，会标记partial_evaluation
+./run.sh python -m scripts.evaluate --checkpoint <checkpoint.pt> --seeds 10000 10001 10002 10003 10004
+./run.sh python -m scripts.record_video --checkpoint <checkpoint.pt> --seeds 10005 --video <output.mp4>
+```
+
+`outputs/<时间>_<阶段>_seed42/`包含配置、地形清单、CSV、checkpoint和评估。流水线另保存各阶段stdout和`status.json`，所有训练均不启动窗口。`latest.pt`用于继续训练，`final.pt`只表示本轮结束，是否通过验收仍须查看评估。resume恢复网络/优化器/随机状态，但从新回合开始，不声称逐物理步复现。
+
+## 已知限制
+
+当前深度为静态地形射线，只渲染地形碰撞组，不包含机器人自遮挡、真实相机噪声和延迟；域随机化关闭。布局变化主要是碎石位置/尺寸，台阶高度为8档3–9cm。尚不能据此宣称Sim2Real或高难地形成功。48/58/历史178维旧权重均不兼容当前`perceptive_176_v1`。
+
+加载时为 MJWarp 适配替换执行器、清零 margin，并用场景配置统一接触参数；磁盘原 XML 保留。后端对部分 cylinder 碰撞组合会提示最多生成单接触点，这属于当前后端支持范围，后续训练前应结合行为评估，不能据此声称接触与旧 MuJoCo 完全一致。

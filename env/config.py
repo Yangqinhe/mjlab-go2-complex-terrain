@@ -1,0 +1,55 @@
+"""集中管理 Go2 控制、固定速度指令和环境参数。"""
+
+from dataclasses import dataclass, field
+
+from terrains.config import TerrainConfig
+
+
+@dataclass
+class VelocityCommandConfig:
+    # 预留范围采样；当前上下界相等，因此 reset 和回合内都保持固定指令。
+    vx: tuple[float, float] = (0.3, 0.3)
+    vy: tuple[float, float] = (0.0, 0.0)
+    wz: tuple[float, float] = (0.0, 0.0)
+    resample_seconds: float = 3.0
+
+
+@dataclass
+class TrainingRewardConfig:
+    tracking_xy: float = 1.5
+    tracking_yaw: float = .5
+    progress: float = .2
+    orientation: float = -2.
+    angular_xy: float = -.05
+    vertical: float = -.5
+    height: float = -2.
+    effort: float = -.00002
+    action_rate: float = -.01
+    joint_limit: float = -1.
+    slip: float = -.2
+    collision: float = -.5
+    success: float = 5.
+    failure: float = -1.
+    nominal_height: float = .27
+    minimum_height: float = .13
+
+
+@dataclass
+class EnvConfig:
+    num_envs: int = 1
+    seed: int = 42
+    physics_dt: float = 0.002
+    decimation: int = 10
+    episode_seconds: float = 90.0
+    kp: float = 40.0
+    kd: float = 2.0
+    action_scale: float = 0.5
+    base_height: float = 0.30
+    tracking_weight: float = 1.5
+    tracking_error_scale: float = 0.1
+    orientation_weight: float = -5.0
+    action_rate_weight: float = -0.01
+    max_tilt_radians: float = 1.0471975512
+    command: VelocityCommandConfig = field(default_factory=VelocityCommandConfig)
+    terrain: TerrainConfig = field(default_factory=TerrainConfig)
+    training_reward: TrainingRewardConfig = field(default_factory=TrainingRewardConfig)

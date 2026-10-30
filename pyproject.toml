@@ -1,0 +1,19 @@
+[project]
+name = "mjlab-go2-complex-terrain"
+version = "0.1.0"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "mjlab==1.6.0",
+    "torch==2.11.0",
+    "torchvision==0.26.0",
+    "warp-lang==1.14.0",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch" }
+torchvision = { index = "pytorch" }
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
