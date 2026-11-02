@@ -24,8 +24,8 @@ def main():
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--levels', type=int)
     parser.add_argument('--layouts', type=int)
-    parser.add_argument('--horizon', type=int, default=32)
-    parser.add_argument('--batch-size', type=int, default=1024)
+    parser.add_argument('--horizon', type=int)
+    parser.add_argument('--batch-size', type=int)
     parser.add_argument('--seed', type=int, default=42)
     terrain_mode = parser.add_mutually_exclusive_group()
     terrain_mode.add_argument('--flat', action='store_true')
@@ -37,12 +37,14 @@ def main():
     parser.add_argument('--step-height-max', type=float)
     parser.add_argument('--action-scale', type=float)
     parser.add_argument('--height-scan-clip', type=float)
+    parser.add_argument('--adaptive-lr', action='store_true', default=None)
+    parser.add_argument('--kl-stop-multiplier', type=float)
     args = parser.parse_args()
     torch.set_num_threads(1)
     torch.manual_seed(args.seed)
     config = EnvConfig(num_envs=args.num_envs, seed=args.seed)
     config.terrain.levels, config.terrain.layouts = args.levels or 8, args.layouts or 4
-    training = TrainConfig(horizon=args.horizon, batch_size=args.batch_size)
+    training = TrainConfig()
     saved = torch.load(args.resume, map_location=args.device, weights_only=False) if args.resume else None
     if saved:
         config = env_from_dict(saved['env_config'])
@@ -58,7 +60,8 @@ def main():
         value = getattr(args, name)
         if value is not None:
             setattr(config, name, value)
-    for name in ['actor_lr', 'velocity_coef', 'kl_interval']:
+    for name in ['actor_lr', 'velocity_coef', 'kl_interval', 'horizon', 'batch_size',
+                 'adaptive_lr', 'kl_stop_multiplier']:
         value = getattr(args, name)
         if value is not None:
             setattr(training, name, value)
@@ -68,12 +71,14 @@ def main():
         if saved is None or saved['stage'] not in ['distill', 'student_ppo']:
             raise ValueError('学生PPO必须从已蒸馏学生权重启动')
         actor.visual_encoder.requires_grad_(False)
-        training.actor_lr, training.critic_lr = 1e-4, 3e-4
+        training.actor_lr = args.actor_lr if args.actor_lr is not None else 1e-4
+        training.critic_lr = 3e-4
     agent = PPO(actor=actor, critic=critic, config=training, device=args.device,
                 actor_lr=training.actor_lr, critic_lr=training.critic_lr,
                 gamma=training.gamma, lmbda=training.lmbda, epochs=training.epochs,
                 epsilon=training.epsilon)
     start_iteration = 0
+    total_steps = 0
     if saved:
         agent.actor.load_state_dict(saved['actor'])
         agent.critic.load_state_dict(saved['critic'])
@@ -81,8 +86,11 @@ def main():
             agent.actor_optimizer.load_state_dict(saved['actor_optimizer'])
             agent.critic_optimizer.load_state_dict(saved['critic_optimizer'])
             start_iteration = saved['iteration']
+            total_steps = saved.get('total_steps', saved['iteration']*saved['train_config']['horizon']
+                                    *saved['env_config']['num_envs'])
             for group in agent.actor_optimizer.param_groups:
-                group['lr'] = training.actor_lr
+                if args.actor_lr is not None:
+                    group['lr'] = training.actor_lr
             for group in agent.critic_optimizer.param_groups:
                 group['lr'] = training.critic_lr
     folder = new_run(args.stage, config, training)
@@ -132,8 +140,9 @@ def main():
                     if visual is not None:
                         visual.reset(ids)
             metrics = agent.update_batch()
+            total_steps += training.horizon*config.num_envs
             values = (statistics/training.horizon).tolist()
-            row = dict(iteration=iteration, total_steps=iteration*training.horizon*config.num_envs,
+            row = dict(iteration=iteration, total_steps=total_steps,
                        reward=reward_sum.item()/training.horizon, vx=values[0],
                        tracking_rmse=values[1]**.5, progress=values[2], base_height=values[3],
                        slip_penalty=values[4], effort_penalty=values[5], episodes=finished,
@@ -151,11 +160,12 @@ def main():
                 print(json.dumps(row), flush=True)
             if iteration % training.save_interval == 0 or iteration == start_iteration+args.iterations:
                 save_checkpoint(folder/'checkpoints/latest.pt', agent, iteration, config, training, args.stage,
-                                deployment=deployment, task=task)
+                                deployment=deployment, task=task, total_steps=total_steps)
                 save_checkpoint(folder/f'checkpoints/iteration_{iteration:06d}.pt',
-                                agent, iteration, config, training, args.stage, deployment=deployment, task=task)
+                                agent, iteration, config, training, args.stage, deployment=deployment,
+                                task=task, total_steps=total_steps)
         save_checkpoint(folder/'checkpoints/final.pt', agent, iteration, config, training, args.stage,
-                        deployment=deployment, task=task)
+                        deployment=deployment, task=task, total_steps=total_steps)
         print(f'TRAINING_FINISHED={folder}', flush=True)
         save_json(folder/'metadata.json', dict(parent=args.resume, device=args.device,
                   gpu=torch.cuda.get_device_name(args.device), status='finished',

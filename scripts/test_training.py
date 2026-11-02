@@ -17,9 +17,10 @@ from rl.run_io import restore_curriculum
 
 def main():
     torch.set_num_threads(1)
-    config = TrainConfig(epochs=1, batch_size=8, kl_interval=1)
+    config = TrainConfig(epochs=1, batch_size=8, kl_interval=1,
+                         adaptive_lr=True, kl_stop_multiplier=2.)
     agent = PPO(actor=PerceptiveActor(), critic=PrivilegedCritic(),
-                device='cuda:0', config=config, epochs=1)
+                device='cuda:0', config=config, epochs=1, actor_lr=3e-5)
     delta = torch.tensor([[1., 10.], [2., 20.], [3., 30.]], device='cuda:0')
     dones = torch.tensor([[0., 1.], [1., 0.], [0., 0.]], device='cuda:0')
     actual = agent.compute_advantage(delta, dones)
@@ -60,6 +61,7 @@ def main():
         assert task.env.episode_length_buf[1] == 2
         metrics = agent.update_batch()
         assert all(torch.isfinite(torch.tensor(value)) for value in metrics.values())
+        assert config.min_actor_lr <= metrics['actor_lr'] <= config.max_actor_lr
         old_levels = task.env.scene.terrain.terrain_levels.clone()
         saved = dict(env_config=asdict(env_config), curriculum_levels=old_levels)
         task.env.scene.terrain.terrain_levels.zero_()

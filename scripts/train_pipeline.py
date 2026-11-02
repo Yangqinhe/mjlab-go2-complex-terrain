@@ -54,10 +54,22 @@ def main():
     parser.add_argument('--distill-iterations', type=int, default=200)
     parser.add_argument('--student-iterations', type=int, default=300)
     parser.add_argument('--student-rounds', type=int, default=3)
+    parser.add_argument('--actor-lr', type=float)
+    parser.add_argument('--horizon', type=int)
+    parser.add_argument('--batch-size', type=int)
+    parser.add_argument('--adaptive-lr', action='store_true')
+    parser.add_argument('--kl-stop-multiplier', type=float)
     args = parser.parse_args()
     if args.skip_pretraining and not args.teacher_start:
         parser.error('--skip-pretraining需要--teacher-start')
     stages = [(height, scale) for height, scale in STAIR_STAGES if height <= args.max_step_height]
+    ppo_args = []
+    for name in ['actor_lr', 'horizon', 'batch_size', 'kl_stop_multiplier']:
+        value = getattr(args, name)
+        if value is not None:
+            ppo_args.extend(['--'+name.replace('_', '-'), value])
+    if args.adaptive_lr:
+        ppo_args.append('--adaptive-lr')
     folder = ROOT/'outputs'/f"{datetime.now():%Y%m%d_%H%M%S}_pipeline"
     folder.mkdir(parents=True)
     save_json(folder/'arguments.json', vars(args))
@@ -90,8 +102,8 @@ def main():
                     ['--resume', checkpoint, '--complex', '--num-envs', 2048, '--levels', levels,
                      '--step-height-min', .03, '--step-height-max', cap, '--action-scale', scale,
                      '--height-scan-clip', 2 if cap > .125 else 1,
-                     '--iterations', args.teacher_iterations, '--actor-lr', .0001,
-                     '--velocity-coef', .01, '--kl-interval', 1], 'TRAINING_FINISHED')
+                     '--iterations', args.teacher_iterations,
+                     '--velocity-coef', .01, '--kl-interval', 1, *ppo_args], 'TRAINING_FINISHED')
                 checkpoint = teacher/'checkpoints/final.pt'
                 state.update(teacher=str(checkpoint), training_step_height=cap)
                 save_json(folder/'status.json', state)
@@ -113,7 +125,7 @@ def main():
         for index in range(args.student_rounds):
             student = run_logged(folder, f'student_{index}', 'scripts.train_go2_ppo',
                 ['--stage', 'student_ppo', '--resume', checkpoint, '--num-envs', 256,
-                 '--iterations', args.student_iterations], 'TRAINING_FINISHED')
+                 '--iterations', args.student_iterations, *ppo_args], 'TRAINING_FINISHED')
             checkpoint = student/'checkpoints/final.pt'
             state['student'] = str(checkpoint)
             save_json(folder/'status.json', state)

@@ -182,7 +182,7 @@ class PPO:
         for _ in range(self.epochs):
             for ids in torch.randperm(len(returns), device=self.device).split(self.batch_size):
                 if not stop_actor and steps % self.config.kl_interval == 0:
-                    stop_actor = self.batch_kl(data).item() > self.target_kl
+                    stop_actor = self.batch_kl(data).item() > self.target_kl*self.config.kl_stop_multiplier
                 if not stop_actor:
                     distribution = Normal(*self.actor(data['states'][ids]))
                     ratio = (distribution.log_prob(data['actions'][ids]).sum(-1)
@@ -215,11 +215,18 @@ class PPO:
                 count += 1
         with torch.no_grad():
             kl = self.batch_kl(data).item()
+            # 按完整rollout的KL调整下一轮步长，保留早停；不靠取消约束增加更新次数。
+            if self.config.adaptive_lr:
+                for group in self.actor_optimizer.param_groups:
+                    if kl > 1.5*self.target_kl:
+                        group['lr'] = max(group['lr']/1.5, self.config.min_actor_lr)
+                    elif kl < .5*self.target_kl:
+                        group['lr'] = min(group['lr']*1.5, self.config.max_actor_lr)
             metrics = dict(actor_loss=totals[0].item()/max(steps, 1),
                            velocity_loss=totals[1].item()/max(steps, 1),
                            critic_loss=totals[2].item()/max(count, 1), kl=kl,
                            std=self.actor.log_std.clamp(-3, 0).exp().mean().item(),
                            action_clip_fraction=(data['actions'].abs()>1).float().mean().item(),
-                           actor_steps=steps)
+                           actor_steps=steps, actor_lr=self.actor_optimizer.param_groups[0]['lr'])
         self.batch_buffer.clear()
         return metrics

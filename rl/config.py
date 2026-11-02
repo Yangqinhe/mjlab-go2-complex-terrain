@@ -21,6 +21,10 @@ class TrainConfig:
     target_kl: float = 0.015
     velocity_coef: float = 0.01
     kl_interval: int = 1
+    adaptive_lr: bool = False
+    kl_stop_multiplier: float = 1.0
+    min_actor_lr: float = 1e-6
+    max_actor_lr: float = 1e-4
     history_length: int = 10
     history_dims: tuple[int, ...] = (450, 256, 128, 64)
     actor_dims: tuple[int, ...] = (176, 256, 128, 12)
