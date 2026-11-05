@@ -189,7 +189,8 @@ class Go2Task:
         local_x = pos[:, 0]+self.config.terrain.spawn_x
         gait_contact = self.env.scene['feet'].data.force[:, self.foot_order, 2].abs() > self.config.gait.contact_force
         terms.update(self.gait.step(gait_contact, flat_mask(self, local_x) & ~numerical,
-                                   r.root_link_lin_vel_b[:, 2], height))
+                                   r.root_link_lin_vel_b[:, 2], height,
+                                   active=(self.env.episode_length_buf*self.dt > .5) & ~numerical))
         regions = self.config.terrain.regions()
         for i, (start, end) in enumerate(regions.values()):
             self.visited[:, i] |= (local_x >= start) & (local_x <= end)

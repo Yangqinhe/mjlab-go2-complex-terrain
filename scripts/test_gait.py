@@ -27,6 +27,15 @@ def main():
     assert good and reward > bound_reward
     assert gait_error(report) == 0
     assert not any((bound, jumping, standing, shuffling))
+    # 平地正常、楼梯/碎石区腾空，也必须被整条路线的检查拒绝。
+    tracker = GaitTracker(GaitConfig(enabled=True), 1, 'cpu', .02)
+    for step in range(200):
+        tracker.step(torch.tensor([diagonal[(step//15) % 2]], dtype=torch.bool),
+                     torch.tensor([True]), torch.zeros(1), torch.tensor([.27]))
+    for _ in range(5):
+        tracker.step(torch.zeros(1, 4, dtype=torch.bool), torch.tensor([False]),
+                     torch.zeros(1), torch.tensor([.27]))
+    assert not gait_passed(dict(gait=summarize_gait([dict(gait=tracker.snapshot(0))])))
     print(dict(status='passed', diagonal=report['gait'], rejects_bound=True,
                rejects_flight=True, rejects_standing=True, rejects_shuffling=True))
 

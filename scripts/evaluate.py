@@ -2,6 +2,7 @@
 
 import argparse
 import copy
+import csv
 from datetime import datetime
 import json
 from pathlib import Path
@@ -24,6 +25,7 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
     if route_following is not None:
         original.route.enabled = route_following
     records = []
+    gait_trace = []
     writer = imageio.get_writer(str(video), fps=30, codec='libx264', quality=7) if video else None
     try:
         for terrain_seed in seeds:
@@ -67,6 +69,11 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                         reward, terminated, truncated, info = task.step(action)
                         if visual:
                             visual.update()
+                    if writer:
+                        contacts = task.gait.previous_contact[0].cpu().tolist()
+                        gait_trace.append(dict(seed=terrain_seed, seconds=(step+1)*task.dt,
+                            **dict(zip(('FL', 'FR', 'RL', 'RR'), map(int, contacts))),
+                            height=info['height'][0].item(), vx=info['velocity'][0].item()))
                     if writer and step*task.dt+1e-9 >= next_frame:
                         data.qpos[:] = task.env.sim.data.qpos[0].cpu().numpy()
                         data.qvel[:] = task.env.sim.data.qvel[0].cpu().numpy()
@@ -86,6 +93,9 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                             f"{actor.mode} | target vx=0.30 | actual vx={info['velocity'][0].item():.3f} | "
                             f"time={step*task.dt:.1f}s | level={level} | seed={terrain_seed}",
                             fill=(255, 255, 255), font=ImageFont.load_default(size=24))
+                        draw.text((15, 35), 'contact: '+ '  '.join(
+                            f'{leg}={int(on)}' for leg, on in zip(('FL', 'FR', 'RL', 'RR'), contacts)),
+                            fill=(255, 255, 255), font=ImageFont.load_default(size=12))
                         writer.append_data(np.asarray(image))
                         next_frame += 1/30
                     done = terminated | truncated
@@ -118,6 +128,11 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
     finally:
         if writer:
             writer.close()
+            if gait_trace:
+                with Path(video).with_suffix('.gait.csv').open('w', newline='') as stream:
+                    output = csv.DictWriter(stream, fieldnames=list(gait_trace[0]))
+                    output.writeheader()
+                    output.writerows(gait_trace)
     region_names = list(original.terrain.regions())
     report = dict(checkpoint=str(Path(checkpoint).resolve()), stage=saved['stage'],
                   iteration=saved['iteration'], episodes=len(records),
@@ -135,7 +150,7 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                   outside_rate=float(np.mean([r['outside'] for r in records])),
                   timeout_rate=float(np.mean([r['timeout'] for r in records])),
                   numerical_failure_rate=float(np.mean([r['numerical_failure'] for r in records])),
-                  walking_gait=original.gait.enabled, gait=summarize_gait(records),
+                  walking_gait=original.gait.enabled, gait=summarize_gait(records, task.dt),
                   vx_rmse=float(np.mean([r['rmse'] for r in records])),
                   mean_distance=float(np.mean([r['distance'] for r in records])),
                   mean_seconds=float(np.mean([r['seconds'] for r in records])),

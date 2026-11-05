@@ -78,6 +78,8 @@ def main():
         if not json.loads(Path(video_report_path).read_text())['records'][0]['success']:
             raise RuntimeError(f'{label}单环境录像重放未成功，保留报告但不发布成功视频')
         shutil.copyfile(video_report_path, delivery/f'video_{label}_evaluation.json')
+        subprocess.run([str(ROOT/'run.sh'), 'python', '-m', 'scripts.plot_gait',
+                        str(delivery/f'student_{label}_stairs.gait.csv')], cwd=ROOT, check=True)
     for path, height_report in zip(height_paths, height_reports):
         shutil.copyfile(path, delivery/f"student_height_{round(height_report['stair_height']*100):02d}cm.json")
     subprocess.run([str(ROOT/'run.sh'), 'python', '-m', 'scripts.plot_training',
@@ -101,6 +103,7 @@ def main():
         '路线跟踪由外部横向位置/航向反馈生成wz指令，vx固定0.3m/s；'
         '部署需提供相对路线的里程计定位，配置见deployment.json。\n\n'
         '附件包含完整学生checkpoint、配置、关节/相机定义、独立评估、训练曲线、视频和SHA256。'
+        '每档同时通过接触步态及整条路线腾空检查；视频附50Hz四足接触CSV和步态曲线。'
         f'网络版本perceptive_176_v1，源码提交{revision}。\n')
     if args.prepare_only:
         print(f'DELIVERY={delivery}', flush=True)
