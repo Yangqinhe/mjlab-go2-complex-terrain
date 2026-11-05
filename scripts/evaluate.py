@@ -73,7 +73,9 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                         contacts = task.gait.previous_contact[0].cpu().tolist()
                         gait_trace.append(dict(seed=terrain_seed, seconds=(step+1)*task.dt,
                             **dict(zip(('FL', 'FR', 'RL', 'RR'), map(int, contacts))),
-                            height=info['height'][0].item(), vx=info['velocity'][0].item()))
+                            height=info['height'][0].item(),
+                            base_z=task.robot.data.root_link_pos_w[0, 2].item(),
+                            vx=info['velocity'][0].item()))
                     if writer and step*task.dt+1e-9 >= next_frame:
                         data.qpos[:] = task.env.sim.data.qpos[0].cpu().numpy()
                         data.qvel[:] = task.env.sim.data.qvel[0].cpu().numpy()

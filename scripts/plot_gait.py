@@ -23,8 +23,10 @@ def main():
                    vmin=0, vmax=1, extent=[t[0], t[-1], 3.5, -.5])
     axes[0].set(yticks=range(4), yticklabels=['FL', 'FR', 'RL', 'RR'],
                 title='Foot contact: green = stance, white = swing')
-    axes[1].plot(t, [float(r['height']) for r in rows])
-    axes[1].set(ylabel='Base height above ground (m)')
+    height_key = 'base_z' if 'base_z' in rows[0] else 'height'
+    axes[1].plot(t, [float(r[height_key]) for r in rows])
+    axes[1].set(ylabel='Base height in world (m)' if height_key == 'base_z'
+                else 'Base height above support (m)')
     axes[2].plot(t, [float(r['vx']) for r in rows], label='Actual vx')
     axes[2].axhline(.3, color='gray', linestyle='--', label='Command 0.3 m/s')
     axes[2].set(xlabel='Time (s)', ylabel='Forward velocity (m/s)')
