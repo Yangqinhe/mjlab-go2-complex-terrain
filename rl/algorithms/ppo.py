@@ -225,7 +225,7 @@ class PPO:
             metrics = dict(actor_loss=totals[0].item()/max(steps, 1),
                            velocity_loss=totals[1].item()/max(steps, 1),
                            critic_loss=totals[2].item()/max(count, 1), kl=kl,
-                           std=self.actor.log_std.clamp(-3, 0).exp().mean().item(),
+                           std=self.actor.log_std.clamp(getattr(self.actor, 'log_std_min', -3.), 0).exp().mean().item(),
                            action_clip_fraction=(data['actions'].abs()>1).float().mean().item(),
                            actor_steps=steps, actor_lr=self.actor_optimizer.param_groups[0]['lr'])
         self.batch_buffer.clear()

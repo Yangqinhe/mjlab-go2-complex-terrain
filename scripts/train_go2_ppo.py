@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import math
 import time
 
 import torch
@@ -43,6 +44,7 @@ def main():
     parser.add_argument('--route-following', action='store_true', default=None)
     parser.add_argument('--walking-gait', action='store_true', default=None)
     parser.add_argument('--freeze-proprio', action='store_true', default=None)
+    parser.add_argument('--target-action-std', type=float)
     args = parser.parse_args()
     torch.set_num_threads(1)
     torch.manual_seed(args.seed if args.seed is not None else 42)
@@ -71,7 +73,8 @@ def main():
         if value is not None:
             setattr(config, name, value)
     for name in ['actor_lr', 'velocity_coef', 'kl_interval', 'horizon', 'batch_size',
-                 'adaptive_lr', 'kl_stop_multiplier', 'save_interval', 'freeze_proprio']:
+                 'adaptive_lr', 'kl_stop_multiplier', 'save_interval', 'freeze_proprio',
+                 'target_action_std']:
         value = getattr(args, name)
         if value is not None:
             setattr(training, name, value)
@@ -107,6 +110,12 @@ def main():
                     group['lr'] = training.actor_lr
             for group in agent.critic_optimizer.param_groups:
                 group['lr'] = training.critic_lr
+    if training.target_action_std is not None:
+        # 仅在采样前重定探索幅度，保留各关节std比例；旧log_prob尚未采集。
+        with torch.no_grad():
+            current = agent.actor.log_std.exp().mean().item()
+            agent.actor.log_std.add_(math.log(training.target_action_std/current))
+        agent.actor_optimizer.state.pop(agent.actor.log_std, None)
     folder = new_run(args.stage, config, training)
     save_json(folder/'metadata.json', dict(parent=args.resume, device=args.device,
               gpu=torch.cuda.get_device_name(args.device), status='running'))

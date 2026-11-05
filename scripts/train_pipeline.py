@@ -72,6 +72,7 @@ def main():
     parser.add_argument('--student-actor-lr', type=float, help='单独设置学生学习率')
     parser.add_argument('--student-fixed-lr', action='store_true', help='学生关闭自适应学习率')
     parser.add_argument('--student-freeze-proprio', action='store_true', help='学生微调时固定本体特征和速度估计')
+    parser.add_argument('--student-action-std', type=float, help='学生每批开始时的平均探索标准差')
     parser.add_argument('--actor-lr', type=float)
     parser.add_argument('--horizon', type=int)
     parser.add_argument('--batch-size', type=int)
@@ -206,6 +207,8 @@ def main():
             student_args.append('--no-adaptive-lr')
         if args.student_freeze_proprio:
             student_args.append('--freeze-proprio')
+        if args.student_action_std is not None:
+            student_args += ['--target-action-std', args.student_action_std]
         continuing = bool(args.resume_pipeline and args.student_start)
         same_student = continuing and str(checkpoint) == state.get('student')
         best_checkpoint = checkpoint

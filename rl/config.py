@@ -34,6 +34,7 @@ class TrainConfig:
     initial_std: float = 0.3
     save_interval: int = 100
     freeze_proprio: bool = False
+    target_action_std: float | None = None
 
 
 @dataclass

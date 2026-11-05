@@ -49,6 +49,8 @@ class PerceptiveActor(nn.Module):
         self.velocity_head = mlp(config.velocity_dims)
         self.actor = mlp(config.actor_dims, final_tanh=True)
         self.log_std = nn.Parameter(torch.full((12,), math.log(config.initial_std)))
+        self.log_std_min = (min(-3., math.log(config.target_action_std/2))
+                            if config.target_action_std is not None else -3.)
         self.terrain_encoder = mlp(config.height_dims, final_tanh=True) if mode == "teacher" else None
         self.visual_encoder = DepthEncoder() if mode == "student" else None
 
@@ -60,7 +62,7 @@ class PerceptiveActor(nn.Module):
         z_v = self.terrain_encoder(terrain) if self.mode == "teacher" else terrain
         fused = torch.cat([p, z_p, z_v, velocity], -1)
         mu = self.actor(fused)
-        return mu, self.log_std.clamp(-3, 0).exp().expand_as(mu)
+        return mu, self.log_std.clamp(self.log_std_min, 0).exp().expand_as(mu)
 
     def velocity(self, states):
         return self.velocity_head(self.history(states[:, 45:495]))
