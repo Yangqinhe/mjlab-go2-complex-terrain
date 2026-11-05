@@ -45,3 +45,5 @@ class DistillConfig:
     common_lr: float = 1e-4
     latent_coef: float = 0.1
     velocity_coef: float = 0.1
+    training_levels: tuple[int, ...] | None = None
+    teacher_mix: float | None = None

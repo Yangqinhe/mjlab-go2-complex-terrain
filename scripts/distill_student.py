@@ -30,13 +30,17 @@ def main():
     parser.add_argument('--sequence-batch', type=int, default=16)
     parser.add_argument('--visual-lr', type=float)
     parser.add_argument('--common-lr', type=float)
+    parser.add_argument('--training-levels', type=int, nargs='+', help='固定混合档位，重复某档可增加其采样比例')
+    parser.add_argument('--teacher-mix', type=float, help='采样时固定教师动作比例，评估仍只使用学生')
     args = parser.parse_args()
     torch.set_num_threads(1)
     teacher, env_config, checkpoint = load_policy(args.teacher, args.device)
     teacher.requires_grad_(False)
     env_config.num_envs = args.num_envs
     config = DistillConfig(num_envs=args.num_envs, burn_in=args.burn_in,
-                           visual_steps=args.visual_steps, sequence_batch=args.sequence_batch)
+                           visual_steps=args.visual_steps, sequence_batch=args.sequence_batch,
+                           training_levels=tuple(args.training_levels) if args.training_levels else None,
+                           teacher_mix=args.teacher_mix)
     training = TrainConfig(**checkpoint['train_config'])
     student = PerceptiveActor('student', training).to(args.device)
     student.copy_common(teacher)
@@ -68,6 +72,14 @@ def main():
     print(f'RUN_DIR={folder}', flush=True)
     task = Go2Task(env_config, args.device)
     restore_curriculum(task, curriculum_saved)
+    if config.training_levels is not None:
+        # 固定混合档位保证最高档持续有数据；不因学生早期失败自动退回低档。
+        levels = torch.tensor(config.training_levels, device=args.device)
+        terrain = task.env.scene.terrain
+        terrain.terrain_levels[:] = levels[torch.arange(args.num_envs, device=args.device) % len(levels)]
+        terrain.env_origins[:] = terrain.terrain_origins[terrain.terrain_levels, terrain.terrain_types]
+        task.curriculum = False
+        task.reset()
     deployment = deployment_config(task)
     save_json(folder/'deployment.json', deployment)
     visual = VisualRuntime(task, student.visual_encoder)
@@ -77,7 +89,8 @@ def main():
             warm = iteration <= args.warmup
             for parameter in common:
                 parameter.requires_grad_(not warm)
-            beta = min(1., max(0., 1-(iteration-args.warmup)/100))
+            beta = (config.teacher_mix if config.teacher_mix is not None else
+                    min(1., max(0., 1-(iteration-args.warmup)/100)))
             batch, sampling = collect_sequences(task, visual, teacher, student,
                 (config.visual_steps+config.burn_in)*5, beta)
             metrics = update_sequences(student, agent.actor_optimizer, batch, config)
