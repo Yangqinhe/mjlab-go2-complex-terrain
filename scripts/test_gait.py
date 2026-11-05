@@ -4,6 +4,7 @@ import torch
 
 from env.config import GaitConfig
 from env.gait import GaitTracker, summarize_gait, gait_passed, gait_error
+from scripts.train_pipeline import passed, selection_score
 
 
 def check_pattern(pattern, period):
@@ -36,6 +37,12 @@ def main():
         tracker.step(torch.zeros(1, 4, dtype=torch.bool), torch.tensor([False]),
                      torch.zeros(1), torch.tensor([.27]))
     assert not gait_passed(dict(gait=summarize_gait([dict(gait=tracker.snapshot(0))])))
+    good_report = dict(report, partial_evaluation=False, unique_layouts=20, success_rate=1., vx_rmse=.03)
+    stopped = dict(good_report, success_rate=0., vx_rmse=.3)
+    repair = dict(good_report, gait=dict(report['gait'], all_max_flight=.1))
+    assert passed(good_report) and not passed(repair)
+    assert selection_score([good_report, good_report]) > selection_score([good_report, repair])
+    assert selection_score([good_report, repair]) > selection_score([good_report, stopped])
     print(dict(status='passed', diagonal=report['gait'], rejects_bound=True,
                rejects_flight=True, rejects_standing=True, rejects_shuffling=True))
 

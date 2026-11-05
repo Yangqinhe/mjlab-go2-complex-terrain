@@ -47,6 +47,14 @@ def passed(report):
             and (not report.get('walking_gait') or gait_passed(report)))
 
 
+def selection_score(reports, gait_penalty=.1):
+    """硬验收不变；训练候选兼顾进展和步态，避免回退到始终停住的模型。"""
+    error = sum(gait_error(report) for report in reports)
+    success = [report['success_rate'] for report in reports]
+    return (sum(passed(report) for report in reports), min(success)-gait_penalty*error,
+            sum(success), -error, -max(report['vx_rmse'] for report in reports))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--teacher-start', help='已有平地教师checkpoint，跳过平地预训练')
@@ -69,6 +77,8 @@ def main():
     parser.add_argument('--route-following', action='store_true')
     parser.add_argument('--walking-gait', action='store_true')
     parser.add_argument('--flat-only', action='store_true', help='平地步态通过后保存并结束，供录像检查')
+    parser.add_argument('--gait-selection-penalty', type=float, default=.1,
+                        help='只用于失败候选选模，不改变步态验收门槛')
     args = parser.parse_args()
     if args.skip_pretraining and not args.teacher_start:
         parser.error('--skip-pretraining需要--teacher-start')
@@ -136,6 +146,11 @@ def main():
             levels = max(8, round((cap-.03)/.01)+1)
             label = f'{round(cap*100):02d}cm'
             best_checkpoint, best_score = checkpoint, None
+            if args.resume_pipeline and state.get('training_step_height') == cap:
+                previous = [json.loads(Path(path).read_text()) for path in
+                            state.get('best_teacher_reports', state.get('latest_teacher_reports', []))]
+                if previous and all(Path(r['checkpoint']).resolve() == Path(checkpoint).resolve() for r in previous):
+                    best_score = selection_score(previous, args.gait_selection_penalty)
             for index in count():
                 if args.teacher_rounds and index >= args.teacher_rounds:
                     raise RuntimeError(f'{label}教师未达标：{low_path}, {high_path}')
@@ -155,13 +170,15 @@ def main():
                     checkpoint = candidate
                     state['teacher'] = str(checkpoint)
                     state['validated_teacher_step_height'] = cap
+                    state.update(latest_teacher_reports=[str(low_path), str(high_path)],
+                                 best_teacher_reports=[str(low_path), str(high_path)],
+                                 teacher_best_score=selection_score([low, high], args.gait_selection_penalty))
                     save_json(folder/'status.json', state)
                     break
-                score = (int(passed(low))+int(passed(high)), -gait_error(low)-gait_error(high),
-                         min(low['success_rate'], high['success_rate']),
-                         low['success_rate']+high['success_rate'], -max(low['vx_rmse'], high['vx_rmse']))
+                score = selection_score([low, high], args.gait_selection_penalty)
                 if best_score is None or score > best_score:
                     best_checkpoint, best_score = candidate, score
+                    state['best_teacher_reports'] = [str(low_path), str(high_path)]
                 checkpoint = best_checkpoint
                 state.update(teacher=str(best_checkpoint), teacher_best_score=best_score,
                              teacher_round=index+1, latest_teacher_reports=[str(low_path), str(high_path)])
@@ -204,9 +221,7 @@ def main():
                     state.update(student=str(checkpoint), height_evaluations=audits)
                     report_path = audits[0]
                     break
-            score = (sum(passed(r) for r in results), -sum(gait_error(r) for r in results),
-                     min(r['success_rate'] for r in results),
-                     -max(r['vx_rmse'] for r in results))
+            score = selection_score(results, args.gait_selection_penalty)
             if best_score is None or score > best_score:
                 best_checkpoint, best_score = candidate, score
             checkpoint = best_checkpoint
