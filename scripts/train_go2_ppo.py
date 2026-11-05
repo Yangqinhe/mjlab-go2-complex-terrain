@@ -46,6 +46,7 @@ def main():
     parser.add_argument('--freeze-proprio', action='store_true', default=None)
     parser.add_argument('--target-action-std', type=float)
     parser.add_argument('--long-flight-penalty', type=float)
+    parser.add_argument('--training-levels', type=int, nargs='+')
     args = parser.parse_args()
     torch.set_num_threads(1)
     torch.manual_seed(args.seed if args.seed is not None else 42)
@@ -82,6 +83,8 @@ def main():
         if value is not None:
             setattr(training, name, value)
     mode = 'teacher' if args.stage == 'teacher' else 'student'
+    if args.training_levels is not None:
+        training.training_levels = tuple(args.training_levels)
     actor, critic = PerceptiveActor(mode, training), PrivilegedCritic(training)
     if mode == 'student':
         if saved is None or saved['stage'] not in ['distill', 'student_ppo']:
@@ -125,6 +128,14 @@ def main():
     print(f'RUN_DIR={folder}', flush=True)
     task = Go2Task(config, args.device)
     restore_curriculum(task, saved)
+    if training.training_levels is not None:
+        # 与蒸馏的固定混合档位一致，最高档失败时仍持续采样，不自动降档。
+        levels = torch.tensor(training.training_levels, device=args.device)
+        terrain = task.env.scene.terrain
+        terrain.terrain_levels[:] = levels[torch.arange(args.num_envs, device=args.device) % len(levels)]
+        terrain.env_origins[:] = terrain.terrain_origins[terrain.terrain_levels, terrain.terrain_types]
+        task.curriculum = False
+        task.reset()
     deployment = deployment_config(task)
     save_json(folder/'deployment.json', deployment)
     visual = None

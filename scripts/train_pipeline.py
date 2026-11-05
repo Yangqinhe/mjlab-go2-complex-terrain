@@ -79,6 +79,7 @@ def main():
     parser.add_argument('--student-long-flight-penalty', type=float, help='学生连续腾空超过宽限时间的惩罚')
     parser.add_argument('--student-continue-routes', action='store_true',
                         help='六档路线能力保留时连续更新，最佳候选另存；最终步态验收不变')
+    parser.add_argument('--student-training-levels', type=int, nargs='+', help='学生固定混合档位，重复项作为采样权重')
     parser.add_argument('--actor-lr', type=float)
     parser.add_argument('--horizon', type=int)
     parser.add_argument('--batch-size', type=int)
@@ -217,6 +218,8 @@ def main():
             student_args += ['--target-action-std', args.student_action_std]
         if args.student_long_flight_penalty is not None:
             student_args += ['--long-flight-penalty', args.student_long_flight_penalty]
+        if args.student_training_levels is not None:
+            student_args += ['--training-levels', *args.student_training_levels]
         continuing = bool(args.resume_pipeline and args.student_start)
         same_student = continuing and str(checkpoint) == state.get('student')
         best_checkpoint = Path(state.get('student_best_checkpoint', checkpoint)) if same_student else checkpoint
@@ -250,7 +253,9 @@ def main():
                         break
                 else:
                     checkpoint = candidate
-                    state.update(student=str(checkpoint), height_evaluations=audits)
+                    state.update(student=str(checkpoint), student_best_checkpoint=str(checkpoint),
+                                 student_best_score=selection_score(results, args.gait_selection_penalty),
+                                 best_student_reports=reports, height_evaluations=audits)
                     report_path = audits[0]
                     break
             score = selection_score(results, args.gait_selection_penalty)

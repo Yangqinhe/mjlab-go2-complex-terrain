@@ -35,6 +35,7 @@ class TrainConfig:
     save_interval: int = 100
     freeze_proprio: bool = False
     target_action_std: float | None = None
+    training_levels: tuple[int, ...] | None = None
 
 
 @dataclass
