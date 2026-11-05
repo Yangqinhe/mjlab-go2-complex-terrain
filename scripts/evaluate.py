@@ -20,8 +20,22 @@ from rl.run_io import load_policy, save_json
 
 
 def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
-             video=None, max_steps=None, route_following=None):
+             video=None, max_steps=None, route_following=None, visual_ablation='none'):
     actor, original, saved = load_policy(checkpoint, device)
+    if visual_ablation != 'none' and actor.mode != 'student':
+        raise ValueError('视觉消融只适用于视觉学生')
+
+    def encode_depth(pair, proprio, hidden):
+        # 在编码之前干预，不修改真实深度缓存、采样时序或本体观测。
+        if visual_ablation == 'far':
+            pair = torch.full_like(pair, .5)  # 固定归一化后的最远深度。
+        elif visual_ablation == 'swap_frames':
+            pair = pair.flip(1)
+        latent, hidden = actor.visual_encoder(pair, proprio, hidden)
+        if visual_ablation == 'zero_latent':
+            latent = torch.zeros_like(latent)
+        return latent, hidden
+
     if route_following is not None:
         original.route.enabled = route_following
     records = []
@@ -38,7 +52,7 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                 terrain.terrain_levels[:] = level
                 terrain.env_origins[:] = terrain.terrain_origins[level, terrain.terrain_types]
                 task.reset()
-                visual = VisualRuntime(task, actor.visual_encoder) if actor.mode == 'student' else None
+                visual = VisualRuntime(task, encode_depth) if actor.mode == 'student' else None
                 complete = torch.zeros(num_envs, dtype=torch.bool, device=device)
                 flight_max = torch.zeros(num_envs, device=device)
                 flight_local_x = torch.zeros_like(flight_max)
@@ -149,7 +163,7 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
     report = dict(checkpoint=str(Path(checkpoint).resolve()), stage=saved['stage'],
                   iteration=saved['iteration'], episodes=len(records),
                   unique_layouts=len({(r['seed'], r['layout'], r['level']) for r in records}),
-                  level=level, seeds=list(seeds),
+                  level=level, seeds=list(seeds), visual_ablation=visual_ablation,
                   route_following=original.route.enabled,
                   route_override=route_following,
                   terrain_obstacles=original.terrain.obstacles,
@@ -181,10 +195,12 @@ def main():
     parser.add_argument('--video')
     parser.add_argument('--max-steps', type=int)
     parser.add_argument('--route-following', action='store_true', default=None)
+    parser.add_argument('--visual-ablation', choices=['none', 'far', 'swap_frames', 'zero_latent'],
+                        default='none', help='诊断：置远深度、交换双帧或移除视觉latent；不计正常验收')
     args = parser.parse_args()
     torch.set_num_threads(1)
     report = evaluate(args.checkpoint, args.num_envs, args.seeds, args.level,
-                      args.device, args.video, args.max_steps, args.route_following)
+                      args.device, args.video, args.max_steps, args.route_following, args.visual_ablation)
     stamp = datetime.now(ZoneInfo('Asia/Hong_Kong')).strftime('%Y%m%d_%H%M%S_%f')
     folder = Path(args.checkpoint).resolve().parent.parent/'evaluations'
     folder.mkdir(exist_ok=True)
