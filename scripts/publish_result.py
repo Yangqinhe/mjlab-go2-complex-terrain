@@ -1,6 +1,7 @@
 """仅发布通过完整独立评估的视觉学生；可等待训练流水线完成后自动上传Release。"""
 
 import argparse
+import csv
 import hashlib
 import json
 from pathlib import Path
@@ -82,9 +83,17 @@ def main():
                         str(delivery/f'student_{label}_stairs.gait.csv')], cwd=ROOT, check=True)
     for path, height_report in zip(height_paths, height_reports):
         shutil.copyfile(path, delivery/f"student_height_{round(height_report['stair_height']*100):02d}cm.json")
+    # 中间快照也可交付，曲线必须止于该权重的实际迭代，不能混入后续更新。
+    with (checkpoint.parent.parent/'metrics.csv').open() as stream:
+        reader = csv.DictReader(stream)
+        columns = reader.fieldnames
+        rows = [row for row in reader if int(row['iteration']) <= saved['iteration']]
+    with (delivery/'training_metrics.csv').open('w', newline='') as stream:
+        writer = csv.DictWriter(stream, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows(rows)
     subprocess.run([str(ROOT/'run.sh'), 'python', '-m', 'scripts.plot_training',
-                    str(checkpoint.parent.parent/'metrics.csv')], cwd=ROOT, check=True)
-    shutil.copyfile(checkpoint.parent.parent/'training_curves.png', delivery/'training_curves.png')
+                    str(delivery/'training_metrics.csv')], cwd=ROOT, check=True)
     revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     manifest = dict(source_revision=revision, checkpoint=str(checkpoint),
                     evaluation=str(evaluation), sha256={})
