@@ -63,7 +63,7 @@ def main():
     if state.get('teacher'):
         shutil.copyfile(state['teacher'], delivery/'teacher_final.pt')
     # 从已通过评估的layout0案例单独重放，视频只记录一个回合，避免其他世界reset穿插。
-    for demo in [report, max(height_reports, key=lambda r:r['stair_height'])]:
+    for demo in sorted(height_reports, key=lambda r:r['stair_height']):
         height_cm = round(demo['stair_height']*100)
         label = 'low' if demo['level'] == 0 else f'{height_cm}cm'
         case = next(row for row in demo['records'] if row['layout'] == 0 and row['success'])
