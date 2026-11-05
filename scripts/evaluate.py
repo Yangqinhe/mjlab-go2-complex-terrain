@@ -40,6 +40,8 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                 task.reset()
                 visual = VisualRuntime(task, actor.visual_encoder) if actor.mode == 'student' else None
                 complete = torch.zeros(num_envs, dtype=torch.bool, device=device)
+                flight_max = torch.zeros(num_envs, device=device)
+                flight_local_x = torch.zeros_like(flight_max)
                 renderer = None
                 if writer:
                     model = copy.copy(task.env.sim.mj_model)
@@ -69,6 +71,12 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                         reward, terminated, truncated, info = task.step(action)
                         if visual:
                             visual.update()
+                        # 定位最长连续腾空结束时机身所在的路线区域。
+                        duration = task.gait.total[:, 2]
+                        local_x = (task.robot.data.root_link_pos_w[:, 0]-task.env.scene.env_origins[:, 0]
+                                   +config.terrain.spawn_x)
+                        flight_local_x = torch.where(duration > flight_max, local_x, flight_local_x)
+                        flight_max = torch.maximum(flight_max, duration)
                     if writer:
                         contacts = task.gait.previous_contact[0].cpu().tolist()
                         gait_trace.append(dict(seed=terrain_seed, seconds=(step+1)*task.dt,
@@ -115,6 +123,8 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                             evaluation_budget_end=bool(step == limit-1 and not (terminated[i] | truncated[i])),
                             regions=task.visited[i].cpu().tolist()))
                         records[-1]['gait'] = task.gait.snapshot(i)
+                        records[-1]['gait']['all_max_flight_local_x'] = (
+                            flight_local_x[i].item() if flight_max[i].item() > 0 else None)
                     complete |= done
                     if complete.all():
                         break

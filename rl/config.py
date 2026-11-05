@@ -50,5 +50,6 @@ class DistillConfig:
     velocity_coef: float = 0.1
     training_levels: tuple[int, ...] | None = None
     teacher_mix: float | None = None
+    action_noise_std: float = 0.
     copy_teacher_common: bool = False
     freeze_common: bool = False

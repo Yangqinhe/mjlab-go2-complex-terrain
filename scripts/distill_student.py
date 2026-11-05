@@ -33,8 +33,10 @@ def main():
     parser.add_argument('--sequence-batch', type=int, default=16)
     parser.add_argument('--visual-lr', type=float)
     parser.add_argument('--common-lr', type=float)
+    parser.add_argument('--latent-coef', type=float)
     parser.add_argument('--training-levels', type=int, nargs='+', help='固定混合档位，重复某档可增加其采样比例')
     parser.add_argument('--teacher-mix', type=float, help='采样时固定教师动作比例，评估仍只使用学生')
+    parser.add_argument('--action-noise-std', type=float, default=0.)
     parser.add_argument('--copy-teacher-common', action='store_true', help='恢复后将共享网络重置为教师参数')
     parser.add_argument('--freeze-common', action='store_true', help='本阶段只训练视觉编码器')
     args = parser.parse_args()
@@ -51,7 +53,9 @@ def main():
                            visual_steps=args.visual_steps, sequence_batch=args.sequence_batch,
                            training_levels=tuple(args.training_levels) if args.training_levels else None,
                            teacher_mix=args.teacher_mix, copy_teacher_common=args.copy_teacher_common,
-                           freeze_common=args.freeze_common)
+                           freeze_common=args.freeze_common, action_noise_std=args.action_noise_std)
+    if args.latent_coef is not None:
+        config.latent_coef = args.latent_coef
     saved = torch.load(args.resume, map_location=args.device, weights_only=False) if args.resume else None
     training = TrainConfig(**(saved or checkpoint)['train_config'])
     student = PerceptiveActor('student', training).to(args.device)
@@ -117,9 +121,10 @@ def main():
             beta = (config.teacher_mix if config.teacher_mix is not None else
                     min(1., max(0., 1-(iteration-args.warmup)/100)))
             batch, sampling = collect_sequences(task, visual, teacher, student,
-                (config.visual_steps+config.burn_in)*5, beta)
+                (config.visual_steps+config.burn_in)*5, beta, config.action_noise_std)
             metrics = update_sequences(student, agent.actor_optimizer, batch, config)
-            row = dict(iteration=iteration, beta=beta, elapsed_seconds=time.monotonic()-began,
+            row = dict(iteration=iteration, beta=beta, action_noise_std=config.action_noise_std,
+                       elapsed_seconds=time.monotonic()-began,
                        normal_captures=visual.normal_captures, reset_captures=visual.reset_captures,
                        numerical_failures=task.numerical_failures,
                        **sampling, **metrics)

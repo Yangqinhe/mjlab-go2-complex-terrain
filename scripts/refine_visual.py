@@ -18,6 +18,9 @@ def main():
     parser.add_argument('--num-envs', type=int, default=256)
     parser.add_argument('--visual-lr', type=float, default=3e-5)
     parser.add_argument('--teacher-mix', type=float, default=.5)
+    parser.add_argument('--latent-coef', type=float, default=.1)
+    parser.add_argument('--copy-teacher-common', action='store_true', help='首阶段恢复教师共享控制器')
+    parser.add_argument('--action-noise-std', type=float, default=0.)
     parser.add_argument('--training-levels', type=int, nargs='+',
                         default=[0, 6, 9, 12, 15, 17, 17, 17, 17, 17])
     args = parser.parse_args()
@@ -26,11 +29,12 @@ def main():
     folder.mkdir()
     save_json(folder/'arguments.json', vars(args))
     state = dict(folder=str(folder), teacher=str(teacher), source_student=str(checkpoint),
+                 control_reference=str(teacher if args.copy_teacher_common else checkpoint),
                  status='running', results=[])
     save_json(folder/'status.json', state)
     print(f'REFINEMENT_DIR={folder}', flush=True)
     try:
-        for seed in args.terrain_seeds:
+        for index, seed in enumerate(args.terrain_seeds):
             name = f'visual_terrain_{seed}'
             state.update(stage=name, log=str(folder/f'{name}.log'))
             save_json(folder/'status.json', state)
@@ -38,7 +42,10 @@ def main():
                 ['--teacher', teacher, '--resume', checkpoint, '--num-envs', args.num_envs,
                  '--iterations', args.iterations, '--seed', seed+1000, '--terrain-seed', seed,
                  '--visual-lr', args.visual_lr, '--common-lr', 0, '--freeze-common', '--warmup', 0,
-                 '--teacher-mix', args.teacher_mix, '--training-levels', *args.training_levels],
+                 '--teacher-mix', args.teacher_mix, '--latent-coef', args.latent_coef,
+                 '--action-noise-std', args.action_noise_std,
+                 *(['--copy-teacher-common'] if args.copy_teacher_common and index == 0 else []),
+                 '--training-levels', *args.training_levels],
                 'DISTILLATION_FINISHED')
             metadata = json.loads((run/'metadata.json').read_text())
             geometry = metadata['terrain_geometry_sha256']

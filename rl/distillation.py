@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 
 @torch.no_grad()
-def collect_sequences(task, visual, teacher, student, steps, beta):
+def collect_sequences(task, visual, teacher, student, steps, beta, action_noise_std=0.):
     n, device = task.config.num_envs, task.device
     # 图像仅在实际更新时入库；策略步只保存两帧索引，避免50Hz重复存整幅图。
     frames = [visual.pair[:, 0].clone(), visual.pair[:, 1].clone()]
@@ -27,7 +27,11 @@ def collect_sequences(task, visual, teacher, student, steps, beta):
                          action=teacher_mu.clone(), terrain=teacher_z.clone(),
                          velocity=critic[:, 45:48].clone(), tick=tick.clone(), reset=reset.clone(),
                          frame_ids=torch.stack([previous, current], -1)))
-        reward, terminated, truncated, info = task.step(beta*teacher_mu+(1-beta)*student_mu)
+        action = beta*teacher_mu+(1-beta)*student_mu
+        if action_noise_std > 0:
+            # 扩展落足相位附近的访问状态；监督标签仍为当前状态的教师均值动作。
+            action = action+action_noise_std*torch.randn_like(action)
+        reward, terminated, truncated, info = task.step(action)
         updated = visual.update()
         tick = torch.full_like(tick, updated)
         if updated:
