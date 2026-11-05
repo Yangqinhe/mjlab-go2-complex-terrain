@@ -41,9 +41,9 @@ def evaluate(folder, name, checkpoint, level=0, video=None, seeds=None):
     return report, path
 
 
-def route_passed(report):
+def route_passed(report, min_success=.8, max_rmse=.1):
     return (not report['partial_evaluation'] and report['unique_layouts'] >= 20
-            and report['success_rate'] >= .8 and report['vx_rmse'] <= .1)
+            and report['success_rate'] >= min_success and report['vx_rmse'] <= max_rmse)
 
 
 def passed(report):
@@ -78,7 +78,7 @@ def main():
     parser.add_argument('--student-action-std', type=float, help='学生每批开始时的平均探索标准差')
     parser.add_argument('--student-long-flight-penalty', type=float, help='学生连续腾空超过宽限时间的惩罚')
     parser.add_argument('--student-continue-routes', action='store_true',
-                        help='六档路线能力保留时连续更新，最佳候选另存；最终步态验收不变')
+                        help='各档至少半数走完且RMSE≤0.2时连续更新；最佳候选另存，最终验收不变')
     parser.add_argument('--student-training-levels', type=int, nargs='+', help='学生固定混合档位，重复项作为采样权重')
     parser.add_argument('--actor-lr', type=float)
     parser.add_argument('--horizon', type=int)
@@ -263,7 +263,9 @@ def main():
                 best_checkpoint, best_score = candidate, score
                 state['best_student_reports'] = reports
             # 续训起点和最佳候选分开，避免每个小批次都回到同一个已知有缺陷的策略。
-            keep_training = args.student_continue_routes and all(route_passed(r) for r in results)
+            # 这里允许暂时退化以积累训练；passed仍使用80%/.1及全部步态硬门槛。
+            keep_training = args.student_continue_routes and all(
+                route_passed(r, min_success=.5, max_rmse=.2) for r in results)
             checkpoint = candidate if keep_training else best_checkpoint
             state.update(student=str(checkpoint), student_best_checkpoint=str(best_checkpoint),
                          student_best_score=best_score, student_round=index+1)

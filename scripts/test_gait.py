@@ -52,6 +52,9 @@ def main():
     repair = dict(good_report, gait=dict(report['gait'], all_max_flight=.1))
     assert passed(good_report) and not passed(repair)
     assert route_passed(repair) and not route_passed(stopped)
+    unfinished = dict(good_report, success_rate=.7, vx_rmse=.14)
+    assert route_passed(unfinished, min_success=.5, max_rmse=.2)
+    assert not passed(unfinished) and not route_passed(unfinished)
     assert selection_score([good_report, good_report]) > selection_score([good_report, repair])
     assert selection_score([good_report, repair]) > selection_score([good_report, stopped])
     print(dict(status='passed', diagonal=report['gait'], rejects_bound=True,
