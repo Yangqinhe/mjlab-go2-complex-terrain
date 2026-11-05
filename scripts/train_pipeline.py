@@ -41,10 +41,13 @@ def evaluate(folder, name, checkpoint, level=0, video=None, seeds=None):
     return report, path
 
 
-def passed(report):
+def route_passed(report):
     return (not report['partial_evaluation'] and report['unique_layouts'] >= 20
-            and report['success_rate'] >= .8 and report['vx_rmse'] <= .1
-            and (not report.get('walking_gait') or gait_passed(report)))
+            and report['success_rate'] >= .8 and report['vx_rmse'] <= .1)
+
+
+def passed(report):
+    return route_passed(report) and (not report.get('walking_gait') or gait_passed(report))
 
 
 def selection_score(reports, gait_penalty=.1):
@@ -74,6 +77,8 @@ def main():
     parser.add_argument('--student-freeze-proprio', action='store_true', help='学生微调时固定本体特征和速度估计')
     parser.add_argument('--student-action-std', type=float, help='学生每批开始时的平均探索标准差')
     parser.add_argument('--student-long-flight-penalty', type=float, help='学生连续腾空超过宽限时间的惩罚')
+    parser.add_argument('--student-continue-routes', action='store_true',
+                        help='六档路线能力保留时连续更新，最佳候选另存；最终步态验收不变')
     parser.add_argument('--actor-lr', type=float)
     parser.add_argument('--horizon', type=int)
     parser.add_argument('--batch-size', type=int)
@@ -214,7 +219,7 @@ def main():
             student_args += ['--long-flight-penalty', args.student_long_flight_penalty]
         continuing = bool(args.resume_pipeline and args.student_start)
         same_student = continuing and str(checkpoint) == state.get('student')
-        best_checkpoint = checkpoint
+        best_checkpoint = Path(state.get('student_best_checkpoint', checkpoint)) if same_student else checkpoint
         best_score = tuple(state['student_best_score']) if same_student and state.get('student_best_score') else None
         start_round = state.get('student_round', 0) if continuing else 0
         for index in count(start_round):
@@ -252,8 +257,11 @@ def main():
             if best_score is None or score > best_score:
                 best_checkpoint, best_score = candidate, score
                 state['best_student_reports'] = reports
-            checkpoint = best_checkpoint
-            state.update(student=str(checkpoint), student_best_score=best_score, student_round=index+1)
+            # 续训起点和最佳候选分开，避免每个小批次都回到同一个已知有缺陷的策略。
+            keep_training = args.student_continue_routes and all(route_passed(r) for r in results)
+            checkpoint = candidate if keep_training else best_checkpoint
+            state.update(student=str(checkpoint), student_best_checkpoint=str(best_checkpoint),
+                         student_best_score=best_score, student_round=index+1)
             save_json(folder/'status.json', state)
         video = folder/'student_low_stairs.mp4'
         run_logged(folder, 'video', 'scripts.record_video',

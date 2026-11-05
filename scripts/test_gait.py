@@ -4,7 +4,7 @@ import torch
 
 from env.config import GaitConfig
 from env.gait import GaitTracker, summarize_gait, gait_passed, gait_error
-from scripts.train_pipeline import passed, selection_score
+from scripts.train_pipeline import passed, route_passed, selection_score
 
 
 def check_pattern(pattern, period):
@@ -51,6 +51,7 @@ def main():
     stopped = dict(good_report, success_rate=0., vx_rmse=.3)
     repair = dict(good_report, gait=dict(report['gait'], all_max_flight=.1))
     assert passed(good_report) and not passed(repair)
+    assert route_passed(repair) and not route_passed(stopped)
     assert selection_score([good_report, good_report]) > selection_score([good_report, repair])
     assert selection_score([good_report, repair]) > selection_score([good_report, stopped])
     print(dict(status='passed', diagonal=report['gait'], rejects_bound=True,
