@@ -46,6 +46,7 @@ def main():
     parser.add_argument('--freeze-proprio', action='store_true', default=None)
     parser.add_argument('--target-action-std', type=float)
     parser.add_argument('--long-flight-penalty', type=float)
+    parser.add_argument('--flight-penalty', type=float)
     parser.add_argument('--training-levels', type=int, nargs='+')
     args = parser.parse_args()
     torch.set_num_threads(1)
@@ -66,6 +67,8 @@ def main():
         config.gait.enabled = args.walking_gait
     if args.long_flight_penalty is not None:
         config.gait.long_flight = args.long_flight_penalty
+    if args.flight_penalty is not None:
+        config.gait.flight = args.flight_penalty
     if args.flat or args.complex:
         config.terrain.obstacles = not args.flat
     for name in ['step_height_min', 'step_height_max', 'levels', 'layouts']:
