@@ -38,7 +38,7 @@ def main():
     parser.add_argument('--step-height-max', type=float)
     parser.add_argument('--action-scale', type=float)
     parser.add_argument('--height-scan-clip', type=float)
-    parser.add_argument('--adaptive-lr', action='store_true', default=None)
+    parser.add_argument('--adaptive-lr', action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument('--kl-stop-multiplier', type=float)
     parser.add_argument('--route-following', action='store_true', default=None)
     parser.add_argument('--walking-gait', action='store_true', default=None)

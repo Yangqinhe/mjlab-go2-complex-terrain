@@ -58,6 +58,7 @@ def selection_score(reports, gait_penalty=.1):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--teacher-start', help='已有平地教师checkpoint，跳过平地预训练')
+    parser.add_argument('--student-start', help='已有视觉学生checkpoint，跳过重复蒸馏')
     parser.add_argument('--resume-pipeline', type=Path, help='从此流水线最近已通过的教师档恢复')
     parser.add_argument('--skip-pretraining', action='store_true', help='从复杂地形教师继续，不重复平地/低障碍课程')
     parser.add_argument('--max-step-height', type=float, default=.20,
@@ -68,6 +69,8 @@ def main():
     parser.add_argument('--distill-iterations', type=int, default=200)
     parser.add_argument('--student-iterations', type=int, default=300)
     parser.add_argument('--student-rounds', type=int, default=3, help='0表示持续训练至验收通过')
+    parser.add_argument('--student-actor-lr', type=float, help='单独设置学生学习率')
+    parser.add_argument('--student-fixed-lr', action='store_true', help='学生关闭自适应学习率')
     parser.add_argument('--actor-lr', type=float)
     parser.add_argument('--horizon', type=int)
     parser.add_argument('--batch-size', type=int)
@@ -183,20 +186,34 @@ def main():
                 state.update(teacher=str(best_checkpoint), teacher_best_score=best_score,
                              teacher_round=index+1, latest_teacher_reports=[str(low_path), str(high_path)])
                 save_json(folder/'status.json', state)
-        student = run_logged(folder, 'distill', 'scripts.distill_student',
-            ['--teacher', checkpoint, '--num-envs', 256,
-             '--iterations', args.distill_iterations], 'DISTILLATION_FINISHED')
-        checkpoint = student/'checkpoints/final.pt'
-        evaluate(folder, 'distill_eval', checkpoint)
+        if args.student_start:
+            checkpoint = Path(args.student_start).resolve()
+        else:
+            student = run_logged(folder, 'distill', 'scripts.distill_student',
+                ['--teacher', checkpoint, '--num-envs', 256,
+                 '--iterations', args.distill_iterations], 'DISTILLATION_FINISHED')
+            checkpoint = student/'checkpoints/final.pt'
+            evaluate(folder, 'distill_eval', checkpoint)
+        # 恢复时教师课程可能全部跳过，学生验收档位仍按目标地形独立计算。
+        levels = max(8, round((args.max_step_height-.03)/.01)+1)
         validation_levels = sorted({0, *[round((height-.03)/(args.max_step_height-.03)*(levels-1))
                                          for height, _ in stages]})
-        best_checkpoint, best_score = checkpoint, None
-        for index in count():
+        student_args = list(ppo_args)
+        if args.student_actor_lr is not None:
+            student_args += ['--actor-lr', args.student_actor_lr]
+        if args.student_fixed_lr:
+            student_args.append('--no-adaptive-lr')
+        continuing = bool(args.resume_pipeline and args.student_start)
+        same_student = continuing and str(checkpoint) == state.get('student')
+        best_checkpoint = checkpoint
+        best_score = tuple(state['student_best_score']) if same_student and state.get('student_best_score') else None
+        start_round = state.get('student_round', 0) if continuing else 0
+        for index in count(start_round):
             if args.student_rounds and index >= args.student_rounds:
                 raise RuntimeError(f'视觉学生全高度验收尚未达标：{path}')
             student = run_logged(folder, f'student_{index}', 'scripts.train_go2_ppo',
                 ['--stage', 'student_ppo', '--resume', checkpoint, '--num-envs', 256,
-                 '--iterations', args.student_iterations, '--seed', 92000+index, *ppo_args], 'TRAINING_FINISHED')
+                 '--iterations', args.student_iterations, '--seed', 92000+index, *student_args], 'TRAINING_FINISHED')
             candidate = student/'checkpoints/final.pt'
             state['last_student_candidate'] = str(candidate)
             save_json(folder/'status.json', state)
@@ -205,9 +222,8 @@ def main():
                 report, path = evaluate(folder, f'student_level_{level}_round_{index}', candidate, level)
                 reports.append(str(path))
                 results.append(report)
-                if not passed(report):
-                    break
-            else:
+            # 每个候选都比较全部高度，避免低档短暂退化遮住最高档的改善。
+            if all(passed(report) for report in results):
                 # 最终使用本轮从未参与模型选择的新seed完整复核，避免只反复挑同一组案例。
                 audits = []
                 for level in validation_levels:
