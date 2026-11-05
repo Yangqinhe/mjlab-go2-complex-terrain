@@ -33,6 +33,7 @@ class TrainConfig:
     velocity_dims: tuple[int, ...] = (64, 32, 3)
     initial_std: float = 0.3
     save_interval: int = 100
+    freeze_proprio: bool = False
 
 
 @dataclass

@@ -71,6 +71,7 @@ def main():
     parser.add_argument('--student-rounds', type=int, default=3, help='0表示持续训练至验收通过')
     parser.add_argument('--student-actor-lr', type=float, help='单独设置学生学习率')
     parser.add_argument('--student-fixed-lr', action='store_true', help='学生关闭自适应学习率')
+    parser.add_argument('--student-freeze-proprio', action='store_true', help='学生微调时固定本体特征和速度估计')
     parser.add_argument('--actor-lr', type=float)
     parser.add_argument('--horizon', type=int)
     parser.add_argument('--batch-size', type=int)
@@ -203,6 +204,8 @@ def main():
             student_args += ['--actor-lr', args.student_actor_lr]
         if args.student_fixed_lr:
             student_args.append('--no-adaptive-lr')
+        if args.student_freeze_proprio:
+            student_args.append('--freeze-proprio')
         continuing = bool(args.resume_pipeline and args.student_start)
         same_student = continuing and str(checkpoint) == state.get('student')
         best_checkpoint = checkpoint
@@ -222,6 +225,7 @@ def main():
                 report, path = evaluate(folder, f'student_level_{level}_round_{index}', candidate, level)
                 reports.append(str(path))
                 results.append(report)
+            state['latest_student_reports'] = reports
             # 每个候选都比较全部高度，避免低档短暂退化遮住最高档的改善。
             if all(passed(report) for report in results):
                 # 最终使用本轮从未参与模型选择的新seed完整复核，避免只反复挑同一组案例。
@@ -230,6 +234,7 @@ def main():
                     report, path = evaluate(folder, f'student_audit_{level}_round_{index}', candidate,
                         level, seeds=list(range(20000+index*10, 20005+index*10)))
                     audits.append(str(path))
+                    state['latest_student_audits'] = list(audits)
                     if not passed(report):
                         break
                 else:
@@ -240,6 +245,7 @@ def main():
             score = selection_score(results, args.gait_selection_penalty)
             if best_score is None or score > best_score:
                 best_checkpoint, best_score = candidate, score
+                state['best_student_reports'] = reports
             checkpoint = best_checkpoint
             state.update(student=str(checkpoint), student_best_score=best_score, student_round=index+1)
             save_json(folder/'status.json', state)

@@ -42,6 +42,7 @@ def main():
     parser.add_argument('--kl-stop-multiplier', type=float)
     parser.add_argument('--route-following', action='store_true', default=None)
     parser.add_argument('--walking-gait', action='store_true', default=None)
+    parser.add_argument('--freeze-proprio', action='store_true', default=None)
     args = parser.parse_args()
     torch.set_num_threads(1)
     torch.manual_seed(args.seed if args.seed is not None else 42)
@@ -70,7 +71,7 @@ def main():
         if value is not None:
             setattr(config, name, value)
     for name in ['actor_lr', 'velocity_coef', 'kl_interval', 'horizon', 'batch_size',
-                 'adaptive_lr', 'kl_stop_multiplier', 'save_interval']:
+                 'adaptive_lr', 'kl_stop_multiplier', 'save_interval', 'freeze_proprio']:
         value = getattr(args, name)
         if value is not None:
             setattr(training, name, value)
@@ -80,6 +81,10 @@ def main():
         if saved is None or saved['stage'] not in ['distill', 'student_ppo']:
             raise ValueError('学生PPO必须从已蒸馏学生权重启动')
         actor.visual_encoder.requires_grad_(False)
+        if training.freeze_proprio:
+            # 微调动作头时保留已验证的本体特征与速度估计，避免同时改变策略输入。
+            actor.history.requires_grad_(False)
+            actor.velocity_head.requires_grad_(False)
         training.actor_lr = args.actor_lr if args.actor_lr is not None else 1e-4
         training.critic_lr = 3e-4
     agent = PPO(actor=actor, critic=critic, config=training, device=args.device,
