@@ -28,6 +28,8 @@ def main():
     parser.add_argument('--burn-in', type=int, default=10)
     parser.add_argument('--visual-steps', type=int, default=20)
     parser.add_argument('--sequence-batch', type=int, default=16)
+    parser.add_argument('--visual-lr', type=float)
+    parser.add_argument('--common-lr', type=float)
     args = parser.parse_args()
     torch.set_num_threads(1)
     teacher, env_config, checkpoint = load_policy(args.teacher, args.device)
@@ -54,6 +56,12 @@ def main():
         agent.actor_optimizer.load_state_dict(saved['actor_optimizer'])
         start = saved['iteration']
         curriculum_saved = saved
+    # 恢复优化器后再覆盖显式学习率，并记录实际生效值。
+    for group, name in zip(agent.actor_optimizer.param_groups, ('visual_lr', 'common_lr')):
+        value = getattr(args, name)
+        if value is not None:
+            group['lr'] = value
+        setattr(config, name, group['lr'])
     folder = new_run('distill', env_config, training)
     save_json(folder/'distillation.json', asdict(config))
     save_json(folder/'metadata.json', dict(teacher=args.teacher, parent=args.resume, status='running'))
