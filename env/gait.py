@@ -59,6 +59,8 @@ class GaitTracker:
             return {}
         # 允许三/四足支撑；两足支撑时奖励对角组合，惩罚前后腿成组跳及同侧支撑。
         return dict(gait_flight=cfg.flight*flight.float()+cfg.flat_flight*(flat & flight),
+                    # 使用整条路线的连续计时；短暂换足与长时间无支撑分别计费。
+                    gait_long_flight=cfg.long_flight*(self.total[:, 2] > cfg.flight_grace+1e-6),
                     gait_support=flat*(cfg.low_support*(count == 1)+cfg.wrong_pair*wrong
                                        +cfg.diagonal_support*diagonal),
                     gait_vertical=cfg.vertical*flat*vertical_velocity.square(),

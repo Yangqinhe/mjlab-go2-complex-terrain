@@ -37,6 +37,16 @@ def main():
         tracker.step(torch.zeros(1, 4, dtype=torch.bool), torch.tensor([False]),
                      torch.zeros(1), torch.tensor([.27]))
     assert not gait_passed(dict(gait=summarize_gait([dict(gait=tracker.snapshot(0))])))
+    # 非平地也计时，第三个20ms无支撑周期才触发；落地和reset都清除连续计时。
+    tracker = GaitTracker(GaitConfig(enabled=True, long_flight=-20.), 1, 'cpu', .02)
+    airborne = torch.zeros(1, 4, dtype=torch.bool)
+    flat, velocity, height = torch.tensor([False]), torch.zeros(1), torch.tensor([.27])
+    costs = [tracker.step(airborne, flat, velocity, height)['gait_long_flight'].item()
+             for _ in range(3)]
+    assert costs == [0., 0., -20.]
+    assert tracker.step(~airborne, flat, velocity, height)['gait_long_flight'].item() == 0.
+    tracker.reset(torch.tensor([0]))
+    assert tracker.step(airborne, flat, velocity, height)['gait_long_flight'].item() == 0.
     good_report = dict(report, partial_evaluation=False, unique_layouts=20, success_rate=1., vx_rmse=.03)
     stopped = dict(good_report, success_rate=0., vx_rmse=.3)
     repair = dict(good_report, gait=dict(report['gait'], all_max_flight=.1))

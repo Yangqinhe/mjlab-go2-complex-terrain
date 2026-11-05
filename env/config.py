@@ -30,6 +30,9 @@ class GaitConfig:
     flat_margin: float = .35
     minimum_swing: float = .08
     flight: float = -2.
+    # 后期可单独提高持续腾空成本；默认0保留旧checkpoint的奖励。
+    long_flight: float = 0.
+    flight_grace: float = .04
     flat_flight: float = -2.
     low_support: float = -2.
     wrong_pair: float = -2.
