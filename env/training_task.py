@@ -8,6 +8,7 @@ from mjlab.managers.metrics_manager import MetricsTermCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg
 
 from env.go2env import make_env_config
+from env.commands import route_command
 from terrains.height_query import HeightQuery
 
 
@@ -60,9 +61,20 @@ class Go2Task:
         self.dt = config.physics_dt*config.decimation
         self.reset()
 
+    def command(self):
+        command = self.env.command_manager.get_command("velocity")
+        if self.config.route.enabled:
+            r = self.robot.data
+            q = r.root_link_quat_w
+            yaw = torch.atan2(2*(q[:, 0]*q[:, 3]+q[:, 1]*q[:, 2]),
+                              1-2*(q[:, 2].square()+q[:, 3].square()))
+            lateral = r.root_link_pos_w[:, 1]-self.env.scene.env_origins[:, 1]
+            command = route_command(command, lateral, yaw, self.config.route)
+        return command
+
     def proprio(self):
         r = self.robot.data
-        command = self.env.command_manager.get_command("velocity")
+        command = self.command()
         return torch.cat([r.root_link_ang_vel_b*.25, r.projected_gravity_b,
                           command*torch.tensor([2., 2., .25], device=self.device),
                           r.joint_pos-r.default_joint_pos, r.joint_vel*.05,
@@ -127,7 +139,7 @@ class Go2Task:
         lever = feet-self.robot.data.body_link_pos_w[:, self.calf_ids]
         foot_velocity = foot_velocity+torch.cross(omega, lever, dim=-1)
         slip = (contact*foot_velocity[:, :, :2].square().sum(-1)).mean(-1)
-        command = self.env.command_manager.get_command("velocity")
+        command = self.command()
         error = (r.root_link_lin_vel_b[:, :2]-command[:, :2]).square().sum(-1)
         angular = r.root_link_ang_vel_b
         limits = r.soft_joint_pos_limits
@@ -156,6 +168,9 @@ class Go2Task:
             "foot_clearance": w.foot_clearance*clearance_error,
         }
         pos = r.root_link_pos_w-self.env.scene.env_origins
+        if self.config.route.enabled:
+            terms['route_lateral'] = w.route_lateral*pos[:, 1].square()
+            terms['route_yaw'] = w.route_yaw*(angular[:, 2]-command[:, 2]).square()
         local_x = pos[:, 0]+self.config.terrain.spawn_x
         regions = self.config.terrain.regions()
         for i, (start, end) in enumerate(regions.values()):

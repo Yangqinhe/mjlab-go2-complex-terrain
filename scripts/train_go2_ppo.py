@@ -26,7 +26,7 @@ def main():
     parser.add_argument('--layouts', type=int)
     parser.add_argument('--horizon', type=int)
     parser.add_argument('--batch-size', type=int)
-    parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--seed', type=int)
     terrain_mode = parser.add_mutually_exclusive_group()
     terrain_mode.add_argument('--flat', action='store_true')
     terrain_mode.add_argument('--complex', action='store_true')
@@ -39,10 +39,11 @@ def main():
     parser.add_argument('--height-scan-clip', type=float)
     parser.add_argument('--adaptive-lr', action='store_true', default=None)
     parser.add_argument('--kl-stop-multiplier', type=float)
+    parser.add_argument('--route-following', action='store_true', default=None)
     args = parser.parse_args()
     torch.set_num_threads(1)
-    torch.manual_seed(args.seed)
-    config = EnvConfig(num_envs=args.num_envs, seed=args.seed)
+    torch.manual_seed(args.seed if args.seed is not None else 42)
+    config = EnvConfig(num_envs=args.num_envs, seed=args.seed if args.seed is not None else 42)
     config.terrain.levels, config.terrain.layouts = args.levels or 8, args.layouts or 4
     training = TrainConfig()
     saved = torch.load(args.resume, map_location=args.device, weights_only=False) if args.resume else None
@@ -50,6 +51,10 @@ def main():
         config = env_from_dict(saved['env_config'])
         config.num_envs = args.num_envs
         training = TrainConfig(**saved['train_config'])
+    if args.seed is not None:
+        config.seed = args.seed
+    if args.route_following is not None:
+        config.route.enabled = args.route_following
     if args.flat or args.complex:
         config.terrain.obstacles = not args.flat
     for name in ['step_height_min', 'step_height_max', 'levels', 'layouts']:
@@ -105,7 +110,7 @@ def main():
     if mode == 'student':
         from env.perception.runtime import VisualRuntime
         visual = VisualRuntime(task, agent.actor.visual_encoder)
-    if saved and saved['stage'] == args.stage:
+    if saved and saved['stage'] == args.stage and args.seed is None:
         torch.set_rng_state(saved['torch_rng'].cpu())
         torch.cuda.set_rng_state_all([state.cpu() for state in saved['cuda_rng']])
     begin = time.monotonic()

@@ -46,6 +46,8 @@ def main():
             or not required.issubset(verified)
             or any(r['partial_evaluation'] or r['unique_layouts'] < 20
                    or r['success_rate'] < .8 or r['vx_rmse'] > .1
+                   or r.get('route_override') is not None
+                   or r.get('route_following', False) != saved['env_config'].get('route', {}).get('enabled', False)
                    or Path(r['checkpoint']).resolve() != checkpoint.resolve()
                    for r in height_reports)):
         raise RuntimeError('目标最高台阶及分高度评估尚未全部通过，不发布最终权重')
@@ -55,19 +57,24 @@ def main():
     shutil.copyfile(evaluation, delivery/'student_evaluation.json')
     shutil.copyfile(checkpoint.parent.parent/'config.json', delivery/'config.json')
     shutil.copyfile(checkpoint.parent.parent/'deployment.json', delivery/'deployment.json')
+    if state.get('teacher'):
+        shutil.copyfile(state['teacher'], delivery/'teacher_final.pt')
     # 从已通过评估的layout0案例单独重放，视频只记录一个回合，避免其他世界reset穿插。
-    case = next(row for row in report['records'] if row['layout'] == 0 and row['success'])
-    with (folder/'delivery_video.log').open('w') as stream:
-        subprocess.run([str(ROOT/'run.sh'), 'python', '-m', 'scripts.record_video',
-            '--checkpoint', str(checkpoint), '--num-envs', '1', '--seeds', str(case['seed']),
-            '--level', str(report['level']), '--video', str(delivery/'student_low_stairs.mp4')],
-            cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT, check=True)
-    video_report_path = next(line.split('=', 1)[1]
-        for line in (folder/'delivery_video.log').read_text().splitlines()
-        if line.startswith('EVALUATION='))
-    if not json.loads(Path(video_report_path).read_text())['records'][0]['success']:
-        raise RuntimeError('单环境录像重放未成功，保留报告但不发布成功视频')
-    shutil.copyfile(video_report_path, delivery/'video_evaluation.json')
+    for demo in [report, max(height_reports, key=lambda r:r['stair_height'])]:
+        height_cm = round(demo['stair_height']*100)
+        label = 'low' if demo['level'] == 0 else f'{height_cm}cm'
+        case = next(row for row in demo['records'] if row['layout'] == 0 and row['success'])
+        log = folder/f'delivery_video_{label}.log'
+        with log.open('w') as stream:
+            subprocess.run([str(ROOT/'run.sh'), 'python', '-m', 'scripts.record_video',
+                '--checkpoint', str(checkpoint), '--num-envs', '1', '--seeds', str(case['seed']),
+                '--level', str(demo['level']), '--video', str(delivery/f'student_{label}_stairs.mp4')],
+                cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT, check=True)
+        video_report_path = next(line.split('=', 1)[1]
+            for line in log.read_text().splitlines() if line.startswith('EVALUATION='))
+        if not json.loads(Path(video_report_path).read_text())['records'][0]['success']:
+            raise RuntimeError(f'{label}单环境录像重放未成功，保留报告但不发布成功视频')
+        shutil.copyfile(video_report_path, delivery/f'video_{label}_evaluation.json')
     for path, height_report in zip(height_paths, height_reports):
         shutil.copyfile(path, delivery/f"student_height_{round(height_report['stair_height']*100):02d}cm.json")
     subprocess.run([str(ROOT/'run.sh'), 'python', '-m', 'scripts.plot_training',
@@ -88,6 +95,8 @@ def main():
         f"通过率{report['success_rate']:.1%}，vx RMSE={report['vx_rmse']:.4f}m/s。\n\n"
         '包含平地、上下楼梯、静态碎石。所有验收高度结果单独附JSON，'
         '域随机化关闭，尚未经实机验证。\n\n'
+        '路线跟踪由外部横向位置/航向反馈生成wz指令，vx固定0.3m/s；'
+        '部署需提供相对路线的里程计定位，配置见deployment.json。\n\n'
         '附件包含完整学生checkpoint、配置、关节/相机定义、独立评估、训练曲线、视频和SHA256。'
         f'网络版本perceptive_176_v1，源码提交{revision}。\n')
     if args.prepare_only:

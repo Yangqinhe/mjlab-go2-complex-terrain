@@ -18,8 +18,10 @@ from rl.run_io import load_policy, save_json
 
 
 def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
-             video=None, max_steps=None):
+             video=None, max_steps=None, route_following=None):
     actor, original, saved = load_policy(checkpoint, device)
+    if route_following is not None:
+        original.route.enabled = route_following
     records = []
     writer = imageio.get_writer(str(video), fps=30, codec='libx264', quality=7) if video else None
     try:
@@ -115,6 +117,8 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                   iteration=saved['iteration'], episodes=len(records),
                   unique_layouts=len({(r['seed'], r['layout'], r['level']) for r in records}),
                   level=level, seeds=list(seeds),
+                  route_following=original.route.enabled,
+                  route_override=route_following,
                   terrain_obstacles=original.terrain.obstacles,
                   stair_height=original.terrain.step_height(level/max(original.terrain.levels-1, 1))
                                if original.terrain.obstacles else 0.,
@@ -122,6 +126,8 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                   partial_evaluation=max_steps is not None and max_steps < task.env.max_episode_length,
                   success_rate=float(np.mean([r['success'] for r in records])),
                   fall_rate=float(np.mean([r['fall'] for r in records])),
+                  outside_rate=float(np.mean([r['outside'] for r in records])),
+                  timeout_rate=float(np.mean([r['timeout'] for r in records])),
                   vx_rmse=float(np.mean([r['rmse'] for r in records])),
                   mean_distance=float(np.mean([r['distance'] for r in records])),
                   mean_seconds=float(np.mean([r['seconds'] for r in records])),
@@ -139,10 +145,11 @@ def main():
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--video')
     parser.add_argument('--max-steps', type=int)
+    parser.add_argument('--route-following', action='store_true', default=None)
     args = parser.parse_args()
     torch.set_num_threads(1)
     report = evaluate(args.checkpoint, args.num_envs, args.seeds, args.level,
-                      args.device, args.video, args.max_steps)
+                      args.device, args.video, args.max_steps, args.route_following)
     stamp = datetime.now(ZoneInfo('Asia/Hong_Kong')).strftime('%Y%m%d_%H%M%S_%f')
     folder = Path(args.checkpoint).resolve().parent.parent/'evaluations'
     folder.mkdir(exist_ok=True)

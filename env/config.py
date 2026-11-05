@@ -15,6 +15,14 @@ class VelocityCommandConfig:
 
 
 @dataclass
+class RouteCommandConfig:
+    enabled: bool = False
+    lateral_gain: float = .7
+    heading_gain: float = 2.
+    max_yaw_rate: float = .5
+
+
+@dataclass
 class TrainingRewardConfig:
     tracking_xy: float = 1.5
     tracking_yaw: float = .5
@@ -29,6 +37,8 @@ class TrainingRewardConfig:
     slip: float = -.2
     collision: float = -.5
     foot_clearance: float = -5.
+    route_lateral: float = -1.
+    route_yaw: float = -.8
     swing_clearance: float = .03
     lookahead_distance: float = .20
     success: float = 5.
@@ -55,5 +65,6 @@ class EnvConfig:
     action_rate_weight: float = -0.01
     max_tilt_radians: float = 1.0471975512
     command: VelocityCommandConfig = field(default_factory=VelocityCommandConfig)
+    route: RouteCommandConfig = field(default_factory=RouteCommandConfig)
     terrain: TerrainConfig = field(default_factory=TerrainConfig)
     training_reward: TrainingRewardConfig = field(default_factory=TrainingRewardConfig)

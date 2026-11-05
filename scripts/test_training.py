@@ -7,7 +7,8 @@ import mujoco
 import numpy as np
 import torch
 
-from env.config import EnvConfig
+from env.config import EnvConfig, RouteCommandConfig
+from env.commands import route_command
 from env.training_task import Go2Task
 from rl.algorithms.ppo import PPO
 from rl.algorithms.perceptive_networks import PerceptiveActor, PrivilegedCritic
@@ -17,6 +18,10 @@ from rl.run_io import restore_curriculum
 
 def main():
     torch.set_num_threads(1)
+    command = torch.tensor([[.3, 0., 0.]]*3)
+    guided = route_command(command, torch.tensor([.5, -.5, 0.]), torch.zeros(3), RouteCommandConfig())
+    assert guided[0, 2] < 0 < guided[1, 2] and guided[2, 2] == 0
+    assert guided[:, 2].abs().max() <= .5 and torch.equal(guided[:, :2], command[:, :2])
     config = TrainConfig(epochs=1, batch_size=8, kl_interval=1,
                          adaptive_lr=True, kl_stop_multiplier=2.)
     agent = PPO(actor=PerceptiveActor(), critic=PrivilegedCritic(),
@@ -33,6 +38,7 @@ def main():
     env_config = EnvConfig(num_envs=4, episode_seconds=.04)
     env_config.terrain.layouts = 4
     env_config.terrain.initial_level = 2
+    env_config.route.enabled = True
     task = Go2Task(env_config, curriculum=False)
     try:
         # 跨过分配地块边缘后，邻块真实地面不能被当成-10m的空洞。
@@ -54,6 +60,8 @@ def main():
             _, final_critic = task.inputs()
             agent.store_batch(sample, reward, terminated | truncated, terminated, final_critic)
         assert truncated.all() and not terminated.any()
+        assert 'route_lateral' in info['terms'] and 'route_yaw' in info['terms']
+        assert torch.allclose(task.command()[:, 0], torch.full((4,), .3, device=task.device))
         old_history = task.history.clone()
         task.reset(torch.tensor([0], device=task.device))
         assert torch.equal(old_history[1:], task.history[1:])
@@ -69,6 +77,7 @@ def main():
         assert torch.equal(task.env.scene.terrain.terrain_levels, old_levels)
         print(json.dumps(dict(status='passed', gae_masks=True, timeout_bootstrap=True,
                               reset_isolation=True, neighbor_ground=True,
+                              route_following=True,
                               curriculum_restore=True, ppo_update=metrics)), flush=True)
     finally:
         task.close()
