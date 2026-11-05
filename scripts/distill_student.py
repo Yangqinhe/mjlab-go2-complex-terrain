@@ -1,6 +1,7 @@
 """从已验收的地形教师训练视觉学生，按顺序监督GRU而非随机打散图像。"""
 
 import argparse
+import hashlib
 from dataclasses import asdict
 import json
 import time
@@ -21,6 +22,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--teacher', required=True)
     parser.add_argument('--resume')
+    parser.add_argument('--seed', type=int, help='采样与仿真初始化seed')
+    parser.add_argument('--terrain-seed', type=int, help='地形几何seed，与采样seed分别记录')
     parser.add_argument('--num-envs', type=int, default=256)
     parser.add_argument('--iterations', type=int, default=200)
     parser.add_argument('--device', default='cuda:0')
@@ -39,12 +42,18 @@ def main():
     teacher, env_config, checkpoint = load_policy(args.teacher, args.device)
     teacher.requires_grad_(False)
     env_config.num_envs = args.num_envs
+    if args.seed is not None:
+        env_config.seed = args.seed
+        torch.manual_seed(args.seed)
+    if args.terrain_seed is not None:
+        env_config.terrain.seed = args.terrain_seed
     config = DistillConfig(num_envs=args.num_envs, burn_in=args.burn_in,
                            visual_steps=args.visual_steps, sequence_batch=args.sequence_batch,
                            training_levels=tuple(args.training_levels) if args.training_levels else None,
                            teacher_mix=args.teacher_mix, copy_teacher_common=args.copy_teacher_common,
                            freeze_common=args.freeze_common)
-    training = TrainConfig(**checkpoint['train_config'])
+    saved = torch.load(args.resume, map_location=args.device, weights_only=False) if args.resume else None
+    training = TrainConfig(**(saved or checkpoint)['train_config'])
     student = PerceptiveActor('student', training).to(args.device)
     student.copy_common(teacher)
     critic = PrivilegedCritic(training).to(args.device)
@@ -57,11 +66,13 @@ def main():
     ])
     start = 0
     curriculum_saved = checkpoint
-    if args.resume:
-        saved = torch.load(args.resume, map_location=args.device, weights_only=False)
+    if saved:
         student.load_state_dict(saved['actor'])
-        agent.actor_optimizer.load_state_dict(saved['actor_optimizer'])
-        start = saved['iteration']
+        critic.load_state_dict(saved['critic'])
+        # PPO为单参数组，蒸馏为视觉/共享两组；跨阶段保留权重并新建优化器。
+        if saved['stage'] == 'distill':
+            agent.actor_optimizer.load_state_dict(saved['actor_optimizer'])
+            start = saved['iteration']
         curriculum_saved = saved
     if config.copy_teacher_common:
         student.copy_common(teacher)
@@ -75,9 +86,16 @@ def main():
         setattr(config, name, group['lr'])
     folder = new_run('distill', env_config, training)
     save_json(folder/'distillation.json', asdict(config))
-    save_json(folder/'metadata.json', dict(teacher=args.teacher, parent=args.resume, status='running'))
+    metadata = dict(teacher=args.teacher, parent=args.resume, status='running',
+                    parent_stage=saved['stage'] if saved else None, seed=env_config.seed,
+                    terrain_seed=env_config.terrain.seed)
+    save_json(folder/'metadata.json', metadata)
     print(f'RUN_DIR={folder}', flush=True)
     task = Go2Task(env_config, args.device)
+    model = task.env.sim.mj_model
+    metadata['terrain_geometry_sha256'] = hashlib.sha256(
+        model.geom_pos.tobytes()+model.geom_size.tobytes()).hexdigest()
+    save_json(folder/'metadata.json', metadata)
     restore_curriculum(task, curriculum_saved)
     if config.training_levels is not None:
         # 固定混合档位保证最高档持续有数据；不因学生早期失败自动退回低档。
@@ -103,6 +121,7 @@ def main():
             metrics = update_sequences(student, agent.actor_optimizer, batch, config)
             row = dict(iteration=iteration, beta=beta, elapsed_seconds=time.monotonic()-began,
                        normal_captures=visual.normal_captures, reset_captures=visual.reset_captures,
+                       numerical_failures=task.numerical_failures,
                        **sampling, **metrics)
             append_csv(folder/'metrics.csv', row)
             print(json.dumps(row), flush=True)
@@ -114,12 +133,12 @@ def main():
                         env_config, training, 'distill', teacher=args.teacher,
                         deployment=deployment, task=task)
         print(f'DISTILLATION_FINISHED={folder}', flush=True)
-        save_json(folder/'metadata.json', dict(teacher=args.teacher, parent=args.resume,
-                  status='finished', iteration=iteration))
+        metadata.update(status='finished', iteration=iteration, numerical_failures=task.numerical_failures)
+        save_json(folder/'metadata.json', metadata)
     except BaseException as error:
-        save_json(folder/'metadata.json', dict(teacher=args.teacher, parent=args.resume,
-                  status='interrupted' if isinstance(error, KeyboardInterrupt) else 'failed',
-                  error=type(error).__name__))
+        metadata.update(status='interrupted' if isinstance(error, KeyboardInterrupt) else 'failed',
+                        error=type(error).__name__)
+        save_json(folder/'metadata.json', metadata)
         raise
     finally:
         task.close()

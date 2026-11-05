@@ -81,6 +81,7 @@ def main():
     parser.add_argument('--student-continue-routes', action='store_true',
                         help='各档至少半数走完且RMSE≤0.2时连续更新；最佳候选另存，最终验收不变')
     parser.add_argument('--student-training-levels', type=int, nargs='+', help='学生固定混合档位，重复项作为采样权重')
+    parser.add_argument('--student-terrain-seed-base', type=int, help='学生每批地形seed=此值+轮号')
     parser.add_argument('--actor-lr', type=float)
     parser.add_argument('--horizon', type=int)
     parser.add_argument('--batch-size', type=int)
@@ -231,9 +232,12 @@ def main():
         for index in count(start_round):
             if args.student_rounds and index >= args.student_rounds:
                 raise RuntimeError(f'视觉学生全高度验收尚未达标：{path}')
+            terrain_args = ([] if args.student_terrain_seed_base is None else
+                            ['--terrain-seed', args.student_terrain_seed_base+index])
             student = run_logged(folder, f'student_{index}', 'scripts.train_go2_ppo',
                 ['--stage', 'student_ppo', '--resume', checkpoint, '--num-envs', 256,
-                 '--iterations', args.student_iterations, '--seed', 92000+index, *student_args], 'TRAINING_FINISHED')
+                 '--iterations', args.student_iterations, '--seed', 92000+index,
+                 *student_args, *terrain_args], 'TRAINING_FINISHED')
             candidate = student/'checkpoints/final.pt'
             state['last_student_candidate'] = str(candidate)
             save_json(folder/'status.json', state)

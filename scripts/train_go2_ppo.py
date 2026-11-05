@@ -29,6 +29,7 @@ def main():
     parser.add_argument('--batch-size', type=int)
     parser.add_argument('--save-interval', type=int)
     parser.add_argument('--seed', type=int)
+    parser.add_argument('--terrain-seed', type=int)
     terrain_mode = parser.add_mutually_exclusive_group()
     terrain_mode.add_argument('--flat', action='store_true')
     terrain_mode.add_argument('--complex', action='store_true')
@@ -61,6 +62,8 @@ def main():
         training = TrainConfig(**saved['train_config'])
     if args.seed is not None:
         config.seed = args.seed
+    if args.terrain_seed is not None:
+        config.terrain.seed = args.terrain_seed
     if args.route_following is not None:
         config.route.enabled = args.route_following
     if args.walking_gait is not None:
