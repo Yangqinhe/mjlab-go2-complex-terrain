@@ -70,6 +70,32 @@ def main():
         metrics = agent.update_batch()
         assert all(torch.isfinite(torch.tensor(value)) for value in metrics.values())
         assert config.min_actor_lr <= metrics['actor_lr'] <= config.max_actor_lr
+        # 数值异常必须算失败终止，不能让NaN进入下一步actor或影响其他世界。
+        task.reset()
+        original_step = task.env.step
+        unaffected = None
+        def inject_invalid(action):
+            nonlocal unaffected
+            result = original_step(action)
+            unaffected = task.env.sim.data.qpos[1:].clone()
+            task.env.sim.data.qvel[0, 0] = float('nan')
+            return result
+        task.env.step = inject_invalid
+        try:
+            states, critic = task.inputs()
+            action, sample = agent.sample_batch(states, critic)
+            reward, terminated, truncated, info = task.step(action)
+        finally:
+            task.env.step = original_step
+        assert info['numerical_failure'].tolist() == [True, False, False, False]
+        assert terminated[0] and info['fall'][0] and not info['success'][0]
+        assert reward[0] == task.weights.failure
+        assert torch.equal(task.env.sim.data.qpos[1:], unaffected)
+        states, final_critic = task.inputs()
+        assert torch.isfinite(states).all() and torch.isfinite(final_critic).all()
+        agent.store_batch(sample, reward, terminated | truncated, terminated, final_critic)
+        task.reset(torch.tensor([0], device=task.device), torch.tensor([False], device=task.device))
+        assert all(torch.isfinite(torch.tensor(v)) for v in agent.update_batch().values())
         old_levels = task.env.scene.terrain.terrain_levels.clone()
         saved = dict(env_config=asdict(env_config), curriculum_levels=old_levels)
         task.env.scene.terrain.terrain_levels.zero_()
@@ -78,6 +104,7 @@ def main():
         print(json.dumps(dict(status='passed', gae_masks=True, timeout_bootstrap=True,
                               reset_isolation=True, neighbor_ground=True,
                               route_following=True,
+                              numerical_failure_termination=True,
                               curriculum_restore=True, ppo_update=metrics)), flush=True)
     finally:
         task.close()

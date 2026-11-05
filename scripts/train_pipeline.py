@@ -13,6 +13,8 @@ from rl.config import STAIR_STAGES
 
 def run_logged(folder, name, module, arguments, marker):
     log = folder/f'{name}.log'
+    if log.exists():
+        log = folder/f'{name}_{datetime.now():%Y%m%d_%H%M%S}.log'
     command = [str(ROOT/'run.sh'), 'python', '-m', module, *map(str, arguments)]
     state = json.loads((folder/'status.json').read_text())
     state.update(stage=name, log=str(log))
@@ -46,6 +48,7 @@ def passed(report):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--teacher-start', help='已有平地教师checkpoint，跳过平地预训练')
+    parser.add_argument('--resume-pipeline', type=Path, help='从此流水线最近已通过的教师档恢复')
     parser.add_argument('--skip-pretraining', action='store_true', help='从复杂地形教师继续，不重复平地/低障碍课程')
     parser.add_argument('--max-step-height', type=float, default=.20,
                         choices=[height for height, _ in STAIR_STAGES])
@@ -58,6 +61,7 @@ def main():
     parser.add_argument('--actor-lr', type=float)
     parser.add_argument('--horizon', type=int)
     parser.add_argument('--batch-size', type=int)
+    parser.add_argument('--save-interval', type=int)
     parser.add_argument('--adaptive-lr', action='store_true')
     parser.add_argument('--kl-stop-multiplier', type=float)
     parser.add_argument('--route-following', action='store_true')
@@ -66,7 +70,7 @@ def main():
         parser.error('--skip-pretraining需要--teacher-start')
     stages = [(height, scale) for height, scale in STAIR_STAGES if height <= args.max_step_height]
     ppo_args = []
-    for name in ['actor_lr', 'horizon', 'batch_size', 'kl_stop_multiplier']:
+    for name in ['actor_lr', 'horizon', 'batch_size', 'kl_stop_multiplier', 'save_interval']:
         value = getattr(args, name)
         if value is not None:
             ppo_args.extend(['--'+name.replace('_', '-'), value])
@@ -74,16 +78,21 @@ def main():
         ppo_args.append('--adaptive-lr')
     if args.route_following:
         ppo_args.append('--route-following')
-    folder = ROOT/'outputs'/f"{datetime.now():%Y%m%d_%H%M%S}_pipeline"
-    folder.mkdir(parents=True)
-    save_json(folder/'arguments.json', vars(args))
+    folder = args.resume_pipeline.resolve() if args.resume_pipeline else ROOT/'outputs'/f"{datetime.now():%Y%m%d_%H%M%S}_pipeline"
+    folder.mkdir(parents=True, exist_ok=bool(args.resume_pipeline))
+    arguments = vars(args).copy()
+    arguments['resume_pipeline'] = str(args.resume_pipeline) if args.resume_pipeline else None
+    save_json(folder/('resume_arguments.json' if args.resume_pipeline else 'arguments.json'), arguments)
     save_json(folder/'curriculum.json', [dict(max_step_height=h, action_scale=s,
               levels=max(8, round((h-.03)/.01)+1)) for h,s in stages])
-    state = dict(status='running', folder=str(folder), target_step_height=args.max_step_height)
+    state = (json.loads((folder/'status.json').read_text()) if args.resume_pipeline else
+             dict(folder=str(folder), target_step_height=args.max_step_height))
+    state.update(status='running')
+    state.pop('error', None)
     save_json(folder/'status.json', state)
     print(f'PIPELINE_DIR={folder}', flush=True)
     try:
-        checkpoint = args.teacher_start
+        checkpoint = state['teacher'] if args.resume_pipeline else args.teacher_start
         if not checkpoint:
             warm = run_logged(folder, 'flat', 'scripts.train_go2_ppo',
                 ['--flat', '--iterations', 300, '--actor-lr', .0001,
@@ -99,6 +108,8 @@ def main():
                  '--iterations', args.terrain_warmup_iterations], 'TRAINING_FINISHED')
             checkpoint = warm/'checkpoints/final.pt'
         for cap, scale in stages:
+            if cap <= state.get('validated_teacher_step_height', 0):
+                continue
             levels = max(8, round((cap-.03)/.01)+1)
             label = f'{round(cap*100):02d}cm'
             best_checkpoint, best_score = checkpoint, None

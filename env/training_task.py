@@ -6,6 +6,7 @@ import torch
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.managers.metrics_manager import MetricsTermCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg
+from mjlab.utils.nan_guard import NanGuard
 
 from env.go2env import make_env_config
 from env.commands import route_command
@@ -59,6 +60,7 @@ class Go2Task:
         self.vx_error_sum = torch.zeros_like(self.error_sum)
         self.visited = torch.zeros(config.num_envs, 7, dtype=torch.bool, device=device)
         self.dt = config.physics_dt*config.decimation
+        self.numerical_failures = 0
         self.reset()
 
     def command(self):
@@ -123,6 +125,16 @@ class Go2Task:
         action_rate = (executed-self.previous_action).square().sum(-1)
         self.env.control_effort.zero_()
         self.env.step(executed)
+        numerical = NanGuard.detect_nans(self.env.sim.data)
+        if numerical.any():
+            ids = numerical.nonzero(as_tuple=False).flatten()
+            self.numerical_failures += len(ids)
+            print(f'NUMERICAL_FAILURE env_ids={ids.tolist()} total={self.numerical_failures}', flush=True)
+            # NaN比较不会触发姿态/高度终止。先恢复物理量，防止污染相机和末状态critic；
+            # 下方仍明确记作失败终止，调用方照常reset并降课程，绝不bootstrap这个新状态。
+            lengths = self.env.episode_length_buf[ids].clone()
+            self.env.reset(env_ids=ids)
+            self.env.episode_length_buf[ids] = lengths
         self.previous_action.copy_(executed)
         self.history = torch.cat([self.history[:, 1:], self.proprio()[:, None]], 1)
         r = self.robot.data
@@ -175,16 +187,18 @@ class Go2Task:
         regions = self.config.terrain.regions()
         for i, (start, end) in enumerate(regions.values()):
             self.visited[:, i] |= (local_x >= start) & (local_x <= end)
-        fall = (r.projected_gravity_b[:, 2] > -math.cos(self.config.max_tilt_radians)) | (height<w.minimum_height)
+        fall = numerical | (r.projected_gravity_b[:, 2] > -math.cos(self.config.max_tilt_radians)) | (height<w.minimum_height)
         outside = (pos[:, 1].abs()>self.config.terrain.width/2-.2) | (local_x<0)
         success = (local_x > self.config.terrain.length-.5) & self.visited.all(-1) & ~fall
         terminated = fall | outside | success
         truncated = self.env.episode_length_buf >= self.env.max_episode_length
+        for value in terms.values():
+            value[numerical] = 0
         reward = self.dt*sum(terms.values())+w.success*success.float()+w.failure*(fall | outside).float()
         self.return_sum += reward
         self.error_sum += error
         self.vx_error_sum += (r.root_link_lin_vel_b[:, 0]-command[:, 0]).square()
-        info = dict(terms=terms, success=success, fall=fall, outside=outside,
+        info = dict(terms=terms, success=success, fall=fall, outside=outside, numerical_failure=numerical,
                     progress=pos[:, 0], height=height, velocity=r.root_link_lin_vel_b[:, 0],
                     error=error, episode_return=self.return_sum,
                     vx_rmse=(self.vx_error_sum/self.env.episode_length_buf.clamp(min=1)).sqrt(),

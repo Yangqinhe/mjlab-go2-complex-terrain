@@ -26,6 +26,7 @@ def main():
     parser.add_argument('--layouts', type=int)
     parser.add_argument('--horizon', type=int)
     parser.add_argument('--batch-size', type=int)
+    parser.add_argument('--save-interval', type=int)
     parser.add_argument('--seed', type=int)
     terrain_mode = parser.add_mutually_exclusive_group()
     terrain_mode.add_argument('--flat', action='store_true')
@@ -66,7 +67,7 @@ def main():
         if value is not None:
             setattr(config, name, value)
     for name in ['actor_lr', 'velocity_coef', 'kl_interval', 'horizon', 'batch_size',
-                 'adaptive_lr', 'kl_stop_multiplier']:
+                 'adaptive_lr', 'kl_stop_multiplier', 'save_interval']:
         value = getattr(args, name)
         if value is not None:
             setattr(training, name, value)
@@ -152,6 +153,7 @@ def main():
                        tracking_rmse=values[1]**.5, progress=values[2], base_height=values[3],
                        slip_penalty=values[4], effort_penalty=values[5], episodes=finished,
                        successes=success_count, falls=fall_count,
+                       numerical_failures=task.numerical_failures,
                        episode_return=return_sum/max(finished, 1),
                        episode_rmse=rmse_sum/max(finished, 1),
                        mean_level=task.env.scene.terrain.terrain_levels.float().mean().item(),
