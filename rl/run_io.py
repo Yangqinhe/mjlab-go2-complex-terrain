@@ -26,7 +26,18 @@ def deployment_config(task):
                 default_joint_pos=task.robot.data.default_joint_pos[0].cpu().tolist(),
                 camera=asdict(DepthConfig()), proprio_dim=45, history_steps=10,
                 fusion_dim=176, observation_version='perceptive_176_v1',
-                route=asdict(task.config.route))
+                route=asdict(task.config.route),
+                control_dt=task.dt, physics_dt=task.config.physics_dt,
+                action_scale=task.config.action_scale, kp=task.config.kp, kd=task.config.kd,
+                joint_target_limits_by_pattern=task.env.cfg.actions['joint_pos'].clip,
+                proprio_fields=[dict(name='angular_velocity_body', dims=3, scale=.25),
+                    dict(name='projected_gravity', dims=3, scale=1.),
+                    dict(name='velocity_command', dims=3, scale=[2., 2., .25]),
+                    dict(name='joint_position_minus_home', dims=12, scale=1.),
+                    dict(name='joint_velocity', dims=12, scale=.05),
+                    dict(name='previous_executed_action', dims=12, scale=1.)],
+                proprio_clip=5., raw_action_clip=1., velocity_feature_scale=2.,
+                depth_normalization='(clip(depth_m, near, far)-near)/(far-near)-0.5')
 
 
 def new_run(stage, env_config, train_config):
