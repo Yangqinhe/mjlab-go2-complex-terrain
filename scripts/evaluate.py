@@ -14,6 +14,7 @@ import torch
 
 from env.training_task import Go2Task
 from env.perception.runtime import VisualRuntime
+from env.gait import summarize_gait
 from rl.run_io import load_policy, save_json
 
 
@@ -101,6 +102,7 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                             planar_rmse=info['rmse'][i].item(), reward=info['episode_return'][i].item(),
                             evaluation_budget_end=bool(step == limit-1 and not (terminated[i] | truncated[i])),
                             regions=task.visited[i].cpu().tolist()))
+                        records[-1]['gait'] = task.gait.snapshot(i)
                     complete |= done
                     if complete.all():
                         break
@@ -133,6 +135,7 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                   outside_rate=float(np.mean([r['outside'] for r in records])),
                   timeout_rate=float(np.mean([r['timeout'] for r in records])),
                   numerical_failure_rate=float(np.mean([r['numerical_failure'] for r in records])),
+                  walking_gait=original.gait.enabled, gait=summarize_gait(records),
                   vx_rmse=float(np.mean([r['rmse'] for r in records])),
                   mean_distance=float(np.mean([r['distance'] for r in records])),
                   mean_seconds=float(np.mean([r['seconds'] for r in records])),

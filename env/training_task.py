@@ -10,6 +10,7 @@ from mjlab.utils.nan_guard import NanGuard
 
 from env.go2env import make_env_config
 from env.commands import route_command
+from env.gait import GaitTracker, flat_mask
 from terrains.height_query import HeightQuery
 
 
@@ -61,6 +62,7 @@ class Go2Task:
         self.visited = torch.zeros(config.num_envs, 7, dtype=torch.bool, device=device)
         self.dt = config.physics_dt*config.decimation
         self.numerical_failures = 0
+        self.gait = GaitTracker(config.gait, config.num_envs, device, self.dt)
         self.reset()
 
     def command(self):
@@ -119,6 +121,7 @@ class Go2Task:
         self.previous_foot[ids] = self.env.sim.data.geom_xpos[ids][:, self.foot_ids]
         self.return_sum[ids], self.error_sum[ids], self.visited[ids] = 0, 0, False
         self.vx_error_sum[ids] = 0
+        self.gait.reset(ids)
 
     def step(self, action):
         executed = action.clamp(-1, 1)
@@ -184,6 +187,9 @@ class Go2Task:
             terms['route_lateral'] = w.route_lateral*pos[:, 1].square()
             terms['route_yaw'] = w.route_yaw*(angular[:, 2]-command[:, 2]).square()
         local_x = pos[:, 0]+self.config.terrain.spawn_x
+        gait_contact = self.env.scene['feet'].data.force[:, self.foot_order, 2].abs() > self.config.gait.contact_force
+        terms.update(self.gait.step(gait_contact, flat_mask(self, local_x) & ~numerical,
+                                   r.root_link_lin_vel_b[:, 2], height))
         regions = self.config.terrain.regions()
         for i, (start, end) in enumerate(regions.values()):
             self.visited[:, i] |= (local_x >= start) & (local_x <= end)

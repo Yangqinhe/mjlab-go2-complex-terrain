@@ -27,6 +27,7 @@ def deployment_config(task):
                 camera=asdict(DepthConfig()), proprio_dim=45, history_steps=10,
                 fusion_dim=176, observation_version='perceptive_176_v1',
                 route=asdict(task.config.route),
+                gait=asdict(task.config.gait),
                 control_dt=task.dt, physics_dt=task.config.physics_dt,
                 action_scale=task.config.action_scale, kp=task.config.kp, kd=task.config.kd,
                 joint_target_limits_by_pattern=task.env.cfg.actions['joint_pos'].clip,
@@ -101,13 +102,14 @@ def append_csv(path, row):
 
 
 def env_from_dict(data):
-    from env.config import EnvConfig, VelocityCommandConfig, TrainingRewardConfig, RouteCommandConfig
+    from env.config import EnvConfig, VelocityCommandConfig, TrainingRewardConfig, RouteCommandConfig, GaitConfig
     from terrains.config import TerrainConfig
     data = dict(data)
     data['command'] = VelocityCommandConfig(**data['command'])
     data['terrain'] = TerrainConfig(**data['terrain'])
     data['training_reward'] = TrainingRewardConfig(**data.get('training_reward', {}))
     data['route'] = RouteCommandConfig(**data.get('route', {}))
+    data['gait'] = GaitConfig(**data.get('gait', {}))
     return EnvConfig(**data)
 
 

@@ -39,6 +39,7 @@ def main():
     env_config.terrain.layouts = 4
     env_config.terrain.initial_level = 2
     env_config.route.enabled = True
+    env_config.gait.enabled = True
     task = Go2Task(env_config, curriculum=False)
     try:
         # 跨过分配地块边缘后，邻块真实地面不能被当成-10m的空洞。
@@ -61,6 +62,7 @@ def main():
             agent.store_batch(sample, reward, terminated | truncated, terminated, final_critic)
         assert truncated.all() and not terminated.any()
         assert 'route_lateral' in info['terms'] and 'route_yaw' in info['terms']
+        assert 'gait_support' in info['terms'] and 'gait_flight' in info['terms']
         assert torch.allclose(task.command()[:, 0], torch.full((4,), .3, device=task.device))
         old_history = task.history.clone()
         task.reset(torch.tensor([0], device=task.device))

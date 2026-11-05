@@ -23,6 +23,24 @@ class RouteCommandConfig:
 
 
 @dataclass
+class GaitConfig:
+    enabled: bool = False
+    nominal_height: float = .27
+    contact_force: float = 5.
+    flat_margin: float = .35
+    minimum_swing: float = .08
+    flight: float = -2.
+    flat_flight: float = -2.
+    low_support: float = -2.
+    wrong_pair: float = -2.
+    diagonal_support: float = .4
+    vertical: float = -3.
+    height: float = -5.
+    touchdown: float = 5.
+    short_swing: float = -5.
+
+
+@dataclass
 class TrainingRewardConfig:
     tracking_xy: float = 1.5
     tracking_yaw: float = .5
@@ -66,5 +84,6 @@ class EnvConfig:
     max_tilt_radians: float = 1.0471975512
     command: VelocityCommandConfig = field(default_factory=VelocityCommandConfig)
     route: RouteCommandConfig = field(default_factory=RouteCommandConfig)
+    gait: GaitConfig = field(default_factory=GaitConfig)
     terrain: TerrainConfig = field(default_factory=TerrainConfig)
     training_reward: TrainingRewardConfig = field(default_factory=TrainingRewardConfig)

@@ -9,6 +9,7 @@ import subprocess
 
 from rl.run_io import ROOT, save_json
 from rl.config import STAIR_STAGES
+from env.gait import gait_passed, gait_error
 
 
 def run_logged(folder, name, module, arguments, marker):
@@ -42,7 +43,8 @@ def evaluate(folder, name, checkpoint, level=0, video=None, seeds=None):
 
 def passed(report):
     return (not report['partial_evaluation'] and report['unique_layouts'] >= 20
-            and report['success_rate'] >= .8 and report['vx_rmse'] <= .1)
+            and report['success_rate'] >= .8 and report['vx_rmse'] <= .1
+            and (not report.get('walking_gait') or gait_passed(report)))
 
 
 def main():
@@ -65,6 +67,8 @@ def main():
     parser.add_argument('--adaptive-lr', action='store_true')
     parser.add_argument('--kl-stop-multiplier', type=float)
     parser.add_argument('--route-following', action='store_true')
+    parser.add_argument('--walking-gait', action='store_true')
+    parser.add_argument('--flat-only', action='store_true', help='平地步态通过后保存并结束，供录像检查')
     args = parser.parse_args()
     if args.skip_pretraining and not args.teacher_start:
         parser.error('--skip-pretraining需要--teacher-start')
@@ -78,6 +82,8 @@ def main():
         ppo_args.append('--adaptive-lr')
     if args.route_following:
         ppo_args.append('--route-following')
+    if args.walking_gait:
+        ppo_args.append('--walking-gait')
     folder = args.resume_pipeline.resolve() if args.resume_pipeline else ROOT/'outputs'/f"{datetime.now():%Y%m%d_%H%M%S}_pipeline"
     folder.mkdir(parents=True, exist_ok=bool(args.resume_pipeline))
     arguments = vars(args).copy()
@@ -93,6 +99,23 @@ def main():
     print(f'PIPELINE_DIR={folder}', flush=True)
     try:
         checkpoint = state['teacher'] if args.resume_pipeline else args.teacher_start
+        if not checkpoint and args.walking_gait:
+            for index in count():
+                warm = run_logged(folder, f'flat_walk_{index}', 'scripts.train_go2_ppo',
+                    ['--flat', '--num-envs', 2048, '--iterations', args.teacher_iterations,
+                     '--seed', 71000+index, *(['--resume', checkpoint] if checkpoint else []),
+                     *ppo_args], 'TRAINING_FINISHED')
+                checkpoint = warm/'checkpoints/final.pt'
+                state['teacher'] = str(checkpoint)
+                save_json(folder/'status.json', state)
+                report, report_path = evaluate(folder, f'flat_walk_eval_{index}', checkpoint)
+                if passed(report):
+                    break
+            if args.flat_only:
+                state.update(status='flat_ready', checkpoint=str(checkpoint), evaluation=str(report_path))
+                save_json(folder/'status.json', state)
+                print(f'FLAT_GAIT_READY={checkpoint}', flush=True)
+                return
         if not checkpoint:
             warm = run_logged(folder, 'flat', 'scripts.train_go2_ppo',
                 ['--flat', '--iterations', 300, '--actor-lr', .0001,
@@ -105,7 +128,7 @@ def main():
             warm = run_logged(folder, 'terrain_warmup', 'scripts.train_go2_ppo',
                 ['--resume', checkpoint, '--complex', '--num-envs', 2048,
                  '--step-height-min', .005, '--step-height-max', .03,
-                 '--iterations', args.terrain_warmup_iterations], 'TRAINING_FINISHED')
+                 '--iterations', args.terrain_warmup_iterations, *ppo_args], 'TRAINING_FINISHED')
             checkpoint = warm/'checkpoints/final.pt'
         for cap, scale in stages:
             if cap <= state.get('validated_teacher_step_height', 0):
@@ -134,7 +157,8 @@ def main():
                     state['validated_teacher_step_height'] = cap
                     save_json(folder/'status.json', state)
                     break
-                score = (min(low['success_rate'], high['success_rate']),
+                score = (int(passed(low))+int(passed(high)), -gait_error(low)-gait_error(high),
+                         min(low['success_rate'], high['success_rate']),
                          low['success_rate']+high['success_rate'], -max(low['vx_rmse'], high['vx_rmse']))
                 if best_score is None or score > best_score:
                     best_checkpoint, best_score = candidate, score
@@ -180,7 +204,8 @@ def main():
                     state.update(student=str(checkpoint), height_evaluations=audits)
                     report_path = audits[0]
                     break
-            score = (sum(passed(r) for r in results), min(r['success_rate'] for r in results),
+            score = (sum(passed(r) for r in results), -sum(gait_error(r) for r in results),
+                     min(r['success_rate'] for r in results),
                      -max(r['vx_rmse'] for r in results))
             if best_score is None or score > best_score:
                 best_checkpoint, best_score = candidate, score

@@ -13,6 +13,7 @@ import torch
 
 from rl.run_io import ROOT, save_json
 from rl.config import STAIR_STAGES
+from env.gait import gait_passed
 
 
 def main():
@@ -33,6 +34,7 @@ def main():
     report = json.loads(evaluation.read_text())
     saved = torch.load(checkpoint, map_location='cpu', weights_only=False)
     if (saved['stage'] != 'student_ppo' or not report.get('terrain_obstacles')
+            or not saved['env_config'].get('gait', {}).get('enabled') or not gait_passed(report)
             or report['partial_evaluation'] or report['unique_layouts'] < 20
             or report['success_rate'] < .8 or report['vx_rmse'] > .1
             or Path(report['checkpoint']).resolve() != checkpoint.resolve()):
@@ -45,6 +47,7 @@ def main():
     if (not height_reports or max(r['stair_height'] for r in height_reports) < target-1e-6
             or not required.issubset(verified)
             or any(r['partial_evaluation'] or r['unique_layouts'] < 20
+                   or not gait_passed(r)
                    or r['success_rate'] < .8 or r['vx_rmse'] > .1
                    or r.get('route_override') is not None
                    or r.get('route_following', False) != saved['env_config'].get('route', {}).get('enabled', False)
