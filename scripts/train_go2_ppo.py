@@ -1,6 +1,7 @@
 """自写PPO的GPU教师/学生训练入口；按rollout保存最终观测再显式reset。"""
 
 import argparse
+import hashlib
 import json
 import math
 import time
@@ -128,11 +129,20 @@ def main():
             current = agent.actor.log_std.exp().mean().item()
             agent.actor.log_std.add_(math.log(training.target_action_std/current))
         agent.actor_optimizer.state.pop(agent.actor.log_std, None)
+    # Torch峰值覆盖环境构建与训练；整进程/整卡峰值由容量入口另行采样。
+    torch.cuda.reset_peak_memory_stats(args.device)
     folder = new_run(args.stage, config, training)
-    save_json(folder/'metadata.json', dict(parent=args.resume, device=args.device,
-              gpu=torch.cuda.get_device_name(args.device), status='running'))
+    metadata = dict(parent=args.resume, device=args.device,
+                    gpu=torch.cuda.get_device_name(args.device), status='running',
+                    num_envs=config.num_envs, seed=config.seed, terrain_seed=config.terrain.seed,
+                    torch_peak_scope='environment_and_training')
+    save_json(folder/'metadata.json', metadata)
     print(f'RUN_DIR={folder}', flush=True)
+    initialization_begin = time.monotonic()
     task = Go2Task(config, args.device)
+    model = task.env.sim.mj_model
+    metadata['terrain_geometry_sha256'] = hashlib.sha256(
+        model.geom_pos.tobytes()+model.geom_size.tobytes()).hexdigest()
     restore_curriculum(task, saved)
     if training.training_levels is not None:
         # 与蒸馏的固定混合档位一致，最高档失败时仍持续采样，不自动降档。
@@ -151,6 +161,9 @@ def main():
     if saved and saved['stage'] == args.stage and args.seed is None:
         torch.set_rng_state(saved['torch_rng'].cpu())
         torch.cuda.set_rng_state_all([state.cpu() for state in saved['cuda_rng']])
+    torch.cuda.synchronize(args.device)
+    metadata['environment_initialization_seconds'] = time.monotonic()-initialization_begin
+    save_json(folder/'metadata.json', metadata)
     begin = time.monotonic()
     try:
         for iteration in range(start_iteration+1, start_iteration+args.iterations+1):
@@ -182,10 +195,13 @@ def main():
                     task.reset(ids, info['success'][ids])
                     if visual is not None:
                         visual.reset(ids)
-            metrics = agent.update_batch()
+            update_begin = time.monotonic()
+            metrics = agent.update_batch()  # 返回的.item()指标已同步本次更新。
+            update_seconds = time.monotonic()-update_begin
             total_steps += training.horizon*config.num_envs
             values = (statistics/training.horizon).tolist()
             row = dict(iteration=iteration, total_steps=total_steps,
+                       ppo_update_seconds=update_seconds,
                        reward=reward_sum.item()/training.horizon, vx=values[0],
                        tracking_rmse=values[1]**.5, progress=values[2], base_height=values[3],
                        slip_penalty=values[4], effort_penalty=values[5], episodes=finished,
@@ -211,13 +227,18 @@ def main():
         save_checkpoint(folder/'checkpoints/final.pt', agent, iteration, config, training, args.stage,
                         deployment=deployment, task=task, total_steps=total_steps)
         print(f'TRAINING_FINISHED={folder}', flush=True)
-        save_json(folder/'metadata.json', dict(parent=args.resume, device=args.device,
-                  gpu=torch.cuda.get_device_name(args.device), status='finished',
-                  iteration=iteration))
+        metadata.update(status='finished', iteration=iteration, numerical_failures=task.numerical_failures,
+                        policy_steps_this_run=training.horizon*args.iterations,
+                        torch_peak_allocated_bytes=torch.cuda.max_memory_allocated(args.device),
+                        torch_peak_reserved_bytes=torch.cuda.max_memory_reserved(args.device))
+        if visual is not None:
+            metadata.update(normal_captures=visual.normal_captures, reset_captures=visual.reset_captures,
+                            depth_capture_calls=visual.sensor.capture_count)
+        save_json(folder/'metadata.json', metadata)
     except BaseException as error:
-        save_json(folder/'metadata.json', dict(parent=args.resume, device=args.device,
-                  status='interrupted' if isinstance(error, KeyboardInterrupt) else 'failed',
-                  error=type(error).__name__))
+        metadata.update(status='interrupted' if isinstance(error, KeyboardInterrupt) else 'failed',
+                        error=type(error).__name__)
+        save_json(folder/'metadata.json', metadata)
         raise
     finally:
         task.close()
