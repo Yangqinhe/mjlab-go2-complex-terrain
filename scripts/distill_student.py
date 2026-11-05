@@ -32,6 +32,8 @@ def main():
     parser.add_argument('--common-lr', type=float)
     parser.add_argument('--training-levels', type=int, nargs='+', help='固定混合档位，重复某档可增加其采样比例')
     parser.add_argument('--teacher-mix', type=float, help='采样时固定教师动作比例，评估仍只使用学生')
+    parser.add_argument('--copy-teacher-common', action='store_true', help='恢复后将共享网络重置为教师参数')
+    parser.add_argument('--freeze-common', action='store_true', help='本阶段只训练视觉编码器')
     args = parser.parse_args()
     torch.set_num_threads(1)
     teacher, env_config, checkpoint = load_policy(args.teacher, args.device)
@@ -40,7 +42,8 @@ def main():
     config = DistillConfig(num_envs=args.num_envs, burn_in=args.burn_in,
                            visual_steps=args.visual_steps, sequence_batch=args.sequence_batch,
                            training_levels=tuple(args.training_levels) if args.training_levels else None,
-                           teacher_mix=args.teacher_mix)
+                           teacher_mix=args.teacher_mix, copy_teacher_common=args.copy_teacher_common,
+                           freeze_common=args.freeze_common)
     training = TrainConfig(**checkpoint['train_config'])
     student = PerceptiveActor('student', training).to(args.device)
     student.copy_common(teacher)
@@ -60,6 +63,10 @@ def main():
         agent.actor_optimizer.load_state_dict(saved['actor_optimizer'])
         start = saved['iteration']
         curriculum_saved = saved
+    if config.copy_teacher_common:
+        student.copy_common(teacher)
+        for parameter in common:
+            agent.actor_optimizer.state.pop(parameter, None)
     # 恢复优化器后再覆盖显式学习率，并记录实际生效值。
     for group, name in zip(agent.actor_optimizer.param_groups, ('visual_lr', 'common_lr')):
         value = getattr(args, name)
@@ -88,7 +95,7 @@ def main():
         for iteration in range(start+1, start+args.iterations+1):
             warm = iteration <= args.warmup
             for parameter in common:
-                parameter.requires_grad_(not warm)
+                parameter.requires_grad_(not (warm or config.freeze_common))
             beta = (config.teacher_mix if config.teacher_mix is not None else
                     min(1., max(0., 1-(iteration-args.warmup)/100)))
             batch, sampling = collect_sequences(task, visual, teacher, student,
