@@ -40,6 +40,9 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                 renderer = None
                 if writer:
                     model = copy.copy(task.env.sim.mj_model)
+                    # MuJoCo裁剪距离按整张地图extent缩放；大课程地图会裁掉2.5m跟拍中的机身。
+                    model.vis.map.znear = .02/model.stat.extent
+                    model.vis.map.zfar = 50./model.stat.extent
                     active = f'course_{round(level/(config.terrain.levels-1)*1000):04d}'
                     if config.terrain.layouts > 1:
                         active += f'_v{int(terrain.terrain_types[0])}'
