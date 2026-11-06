@@ -5,6 +5,8 @@ import copy
 import json
 from pathlib import Path
 from datetime import datetime
+from dataclasses import asdict
+import hashlib
 
 import torch
 
@@ -21,11 +23,13 @@ def evaluate(checkpoint, env_config, seeds=(50100, 50101, 50102), seconds=20., d
     scenarios = [(vx, wz, 'constant') for vx in (-.3, 0., .3) for wz in (-.5, 0., .5)]
     scenarios += [(.3, 0., 'stop'), (.3, 0., 'reverse')]
     records = []
+    evaluated_configs = []
     for seed in seeds:
         config = copy.deepcopy(source)
         config.num_envs = len(scenarios)
         config.seed, config.randomization.seed = seed, seed+10000
         config.episode_seconds = seconds+1
+        evaluated_configs.append(asdict(config))
         task = Go2Task(config, device, curriculum=False)
         try:
             visual = VisualRuntime(task, actor.visual_encoder)
@@ -96,6 +100,8 @@ def evaluate(checkpoint, env_config, seeds=(50100, 50101, 50102), seconds=20., d
         finally:
             task.close()
     report = dict(checkpoint=str(Path(checkpoint).resolve()),iteration=saved['iteration'],
+                  checkpoint_sha256=hashlib.sha256(Path(checkpoint).read_bytes()).hexdigest(),
+                  evaluated_configs=evaluated_configs,
                   seeds=list(seeds),seconds=seconds,command_ranges=dict(vx=[-.3,.3],vy=[0,0],wz=[-.5,.5]),
                   cases=len(records),pass_rate=sum(r['passed'] for r in records)/len(records),
                   scope='边界速度、转向、停止和反向专项；不代替复杂地形路线与完整步态验收',
