@@ -2,6 +2,8 @@
 
 import json
 from pathlib import Path
+from datetime import datetime
+from types import SimpleNamespace
 
 import torch
 from mjlab.utils.lab_api.math import matrix_from_quat
@@ -13,6 +15,18 @@ from rl.run_io import env_from_dict, load_policy, save_json
 
 def main():
     torch.set_num_threads(1)
+    from env.commands import free_training_config, VelocitySchedule
+    from env.config import EnvConfig
+    route=EnvConfig();route.command.stop_fraction=0.;route.route.enabled=True
+    free=free_training_config(route,True)
+    assert free.command.stop_fraction==.2 and route.command.stop_fraction==0.
+    assert not free.route.enabled and free.terrain.layouts==4
+    assert free.command.vx==(-.3,.3) and free.command.wz==(-.5,.5)
+    free.num_envs=2048
+    schedule=VelocitySchedule(SimpleNamespace(config=free,device='cpu',dt=.02))
+    schedule.reset(torch.arange(free.num_envs))
+    zero_fraction=(schedule.target.abs().sum(-1)==0).float().mean().item()
+    assert .1 < zero_fraction < .23
     folder = Path('outputs/20261106_domain_randomization_setup')
     checkpoint = 'outputs/20261106_135343_676539_student_ppo_seed92037/checkpoints/final.pt'
     device = 'cuda:0'
@@ -74,8 +88,9 @@ def main():
         for _ in range(100):task.schedule.step()
         assert task.schedule.applied.abs().max() < 1e-5
         assert task.numerical_failures == 0
-        save_json(folder/'verification.json', dict(status='passed',
-            checks=['old_checkpoint_defaults','payload_parallel_axis','inertia_positive',
+        report=folder/('verification_'+datetime.now().strftime('%Y%m%d_%H%M%S_%f')+'.json')
+        save_json(report, dict(status='passed',zero_target_fraction=zero_fraction,
+            checks=['route_to_free_restores_stop_probability','actual_zero_target_sampling','old_checkpoint_defaults','payload_parallel_axis','inertia_positive',
                     'per_world_mass_and_friction','foot_priority','one_noise_sample_per_step',
                     'partial_reset_isolation','action_delay','continuous_signed_commands','command_stop_ramp'],
             payload_mass_range=task.env.dr_samples[:,0].aminmax()[0].item(),

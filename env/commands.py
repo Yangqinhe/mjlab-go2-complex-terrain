@@ -52,3 +52,28 @@ class VelocitySchedule:
         limit = torch.tensor([self.config.acceleration, self.config.acceleration,
                               self.config.yaw_acceleration], device=self.task.device)*self.task.dt
         self.applied += (self.target-self.applied).clamp(-limit, limit)
+
+
+def free_training_config(source, d435i_scenes=False):
+    """自由速度任务显式设置启停，防止继承路线阶段的stop_fraction=0。"""
+    from copy import deepcopy
+    config=deepcopy(source)
+    config.route.enabled=False
+    config.command.mode='free'
+    config.command.vx=(-.3,.3)
+    config.command.vy=(0.,0.)
+    config.command.wz=(-.5,.5)
+    config.command.stop_fraction=.2
+    config.command.anchor_fraction=.2
+    config.episode_seconds=24.
+    config.terrain.obstacles=False
+    config.terrain.levels=2
+    config.terrain.layouts=4 if d435i_scenes else 1
+    config.terrain.width=20.
+    config.terrain.flat_length=20.
+    config.terrain.spawn_x=10.
+    config.randomization.enabled=True
+    config.randomization.payload_max=.5
+    if d435i_scenes:
+        config.terrain.corridor_width=(12.,16.)
+    return config
