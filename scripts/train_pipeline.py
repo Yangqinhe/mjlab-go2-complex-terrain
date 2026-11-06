@@ -7,6 +7,8 @@ from itertools import count
 from pathlib import Path
 import subprocess
 
+import torch
+
 from rl.run_io import ROOT, save_json
 from rl.config import STAIR_STAGES
 from env.gait import gait_passed, gait_error
@@ -73,6 +75,7 @@ def main():
     parser.add_argument('--distill-iterations', type=int, default=200)
     parser.add_argument('--student-iterations', type=int, default=300)
     parser.add_argument('--student-num-envs', type=int, default=256, help='视觉学生PPO并行数，容量实测后再扩大')
+    parser.add_argument('--student-evaluate-first', action='store_true', help='先完整验收起点学生，再决定是否继续更新')
     parser.add_argument('--student-rounds', type=int, default=3, help='0表示持续训练至验收通过')
     parser.add_argument('--student-actor-lr', type=float, help='单独设置学生学习率')
     parser.add_argument('--student-fixed-lr', action='store_true', help='学生关闭自适应学习率')
@@ -98,6 +101,13 @@ def main():
     args = parser.parse_args()
     if args.skip_pretraining and not args.teacher_start:
         parser.error('--skip-pretraining需要--teacher-start')
+    if args.student_evaluate_first:
+        if not args.student_start:
+            parser.error('--student-evaluate-first需要--student-start视觉PPO权重')
+        starting = torch.load(args.student_start, map_location='cpu', weights_only=False)
+        if (starting['stage'] != 'student_ppo' or starting['train_config'].get('proprio_only', False)
+                or (args.walking_gait and not starting['env_config']['gait']['enabled'])):
+            parser.error('起点须为与步态要求一致的视觉PPO学生')
     stages = [(height, scale) for height, scale in STAIR_STAGES if height <= args.max_step_height]
     ppo_args = []
     for name in ['actor_lr', 'horizon', 'batch_size', 'kl_stop_multiplier', 'save_interval']:
@@ -236,11 +246,14 @@ def main():
                 raise RuntimeError(f'视觉学生全高度验收尚未达标：{path}')
             terrain_args = ([] if args.student_terrain_seed_base is None else
                             ['--terrain-seed', args.student_terrain_seed_base+index])
-            student = run_logged(folder, f'student_{index}', 'scripts.train_go2_ppo',
-                ['--stage', 'student_ppo', '--resume', checkpoint, '--num-envs', args.student_num_envs,
-                 '--iterations', args.student_iterations, '--seed', 92000+index,
-                 *student_args, *terrain_args], 'TRAINING_FINISHED')
-            candidate = student/'checkpoints/final.pt'
+            if index == start_round and args.student_evaluate_first:
+                candidate = checkpoint
+            else:
+                student = run_logged(folder, f'student_{index}', 'scripts.train_go2_ppo',
+                    ['--stage', 'student_ppo', '--resume', checkpoint, '--num-envs', args.student_num_envs,
+                     '--iterations', args.student_iterations, '--seed', 92000+index,
+                     *student_args, *terrain_args], 'TRAINING_FINISHED')
+                candidate = student/'checkpoints/final.pt'
             state['last_student_candidate'] = str(candidate)
             save_json(folder/'status.json', state)
             reports, results = [], []
