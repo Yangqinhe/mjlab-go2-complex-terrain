@@ -72,6 +72,7 @@ def main():
     parser.add_argument('--teacher-rounds', type=int, default=3, help='0表示持续训练至验收通过')
     parser.add_argument('--distill-iterations', type=int, default=200)
     parser.add_argument('--student-iterations', type=int, default=300)
+    parser.add_argument('--student-num-envs', type=int, default=256, help='视觉学生PPO并行数，容量实测后再扩大')
     parser.add_argument('--student-rounds', type=int, default=3, help='0表示持续训练至验收通过')
     parser.add_argument('--student-actor-lr', type=float, help='单独设置学生学习率')
     parser.add_argument('--student-fixed-lr', action='store_true', help='学生关闭自适应学习率')
@@ -236,7 +237,7 @@ def main():
             terrain_args = ([] if args.student_terrain_seed_base is None else
                             ['--terrain-seed', args.student_terrain_seed_base+index])
             student = run_logged(folder, f'student_{index}', 'scripts.train_go2_ppo',
-                ['--stage', 'student_ppo', '--resume', checkpoint, '--num-envs', 256,
+                ['--stage', 'student_ppo', '--resume', checkpoint, '--num-envs', args.student_num_envs,
                  '--iterations', args.student_iterations, '--seed', 92000+index,
                  *student_args, *terrain_args], 'TRAINING_FINISHED')
             candidate = student/'checkpoints/final.pt'
