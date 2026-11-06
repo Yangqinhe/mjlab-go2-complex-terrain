@@ -210,6 +210,10 @@ class Go2Task:
             from env.posture import front_posture_terms
             terms.update(front_posture_terms(self, command, flat_mask(self, local_x=(
                 r.root_link_pos_w[:, 0]-self.env.scene.env_origins[:, 0]+self.config.terrain.spawn_x))))
+        if w.all_hip_deviation or w.foot_landing:
+            from env.posture import normal_foot_terms
+            local_x = r.root_link_pos_w[:, 0]-self.env.scene.env_origins[:, 0]+self.config.terrain.spawn_x
+            terms.update(normal_foot_terms(self, command, flat_mask(self, local_x)))
         free = self.config.command.mode == 'free'
         stopping = command.abs().amax(-1) < .03
         if self.schedule is not None:

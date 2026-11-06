@@ -10,6 +10,7 @@ import shutil
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 import torch
 
@@ -26,6 +27,9 @@ def main():
     parser.add_argument('--free-envs',type=int,default=128)
     parser.add_argument('--visual-source',default=str(VISUAL))
     parser.add_argument('--initial-checkpoint')
+    parser.add_argument('--reference-checkpoint',default=str(REFERENCE))
+    parser.add_argument('--nominal-gait-first',action='store_true',help='先关闭随机化纠正四足步态，数值和视频复核通过才开放随机化')
+    parser.add_argument('--require-normal-gait',action='store_true')
     parser.add_argument('--resume-controller',type=Path,help='恢复控制目录，保留选模与课程，并优先评估已完成的训练批次')
     parser.add_argument('--front-posture-finetune',action='store_true',help='从指定学生权重微调前腿站姿；可显式选择当前随机化强度')
     parser.add_argument('--initial-strength',type=float,help='显式沿用来源随机化强度；省略时前腿阶段默认1、常规训练默认0.25')
@@ -33,9 +37,10 @@ def main():
     parser.add_argument('--visual-refresh-every',type=int,default=3)
     parser.add_argument('--screen-only',action='store_true',help='只用于候选初始化对比，不是持续训练默认行为')
     args=parser.parse_args()
+    if args.nominal_gait_first:args.front_posture_finetune=True
     if args.front_posture_finetune and not (args.initial_checkpoint or args.resume_controller):
         parser.error('前腿微调必须指定作为起点的完整学生检查点')
-    if args.initial_strength is not None and not 0<args.initial_strength<=1:
+    if args.initial_strength is not None and not (0<args.initial_strength<=1 or (args.initial_strength==0 and args.nominal_gait_first)):
         parser.error('initial-strength必须在(0,1]')
     torch.set_num_threads(1)
     recovered=None;pending_run=None
@@ -45,6 +50,9 @@ def main():
         history=folder/'resume_history';history.mkdir(exist_ok=True)
         save_json(history/f'{datetime.now():%Y%m%d_%H%M%S_%f}_before_resume.json',recovered)
         args.front_posture_finetune=recovered.get('front_posture_finetune',False)
+        args.nominal_gait_first=recovered.get('nominal_gait_first',False)
+        args.require_normal_gait=recovered.get('require_normal_gait',False)
+        args.reference_checkpoint=recovered['reference']
         args.visual_source=recovered['visual_source']
         pending_run=recovered.get('pending_run')
         if not pending_run and str(recovered.get('stage','')).endswith('_train'):
@@ -56,16 +64,20 @@ def main():
     else:
         folder=ROOT/'outputs'/f'{datetime.now():%Y%m%d_%H%M%S_%f}_continual_student'
         folder.mkdir()
-    ref=torch.load(REFERENCE,map_location='cpu',weights_only=False)
+    reference_path=Path(args.reference_checkpoint)
+    ref=torch.load(reference_path,map_location='cpu',weights_only=False)
     phi=torch.load(args.visual_source,map_location='cpu',weights_only=False)
     source=env_from_dict(ref['env_config'])
     initial_strength=recovered['strength'] if recovered else (args.initial_strength if args.initial_strength is not None
-        else (1. if args.front_posture_finetune else .25))
+        else (0. if args.nominal_gait_first else 1. if args.front_posture_finetune else .25))
     def configured_tasks(strength,route_envs,free_envs,seed):
         route,free=task_configs(source,strength,route_envs,free_envs,seed)
         if args.front_posture_finetune:
             from env.posture import configure_front_posture
             for cfg in (route,free):configure_front_posture(cfg,1.)
+        if args.nominal_gait_first or args.require_normal_gait:
+            from env.posture import configure_normal_gait
+            for cfg in (route,free):configure_normal_gait(cfg,1.)
         return route,free
     route,free=configured_tasks(initial_strength,args.route_envs,args.free_envs,85000)
     if recovered:
@@ -83,7 +95,7 @@ def main():
             for k,v in phi['actor'].items():
                 if k.startswith('visual_encoder.'):seed['actor'][k]=v
         seed['env_config']=asdict(route)
-        seed['initialization']=dict(common_source=args.initial_checkpoint or str(REFERENCE),
+        seed['initialization']=dict(common_source=args.initial_checkpoint or str(reference_path),
                                     visual_source='included in checkpoint' if args.initial_checkpoint else args.visual_source,ppo_updates=0)
         checkpoint=initial/'checkpoints/final.pt';torch.save(seed,checkpoint)
         save_json(initial/'metadata.json',dict(status='initialization_only',**seed['initialization']))
@@ -92,9 +104,12 @@ def main():
         save_json(initial/'deployment.json',deployment)
         save_json(initial/'task_configs.json',dict(route=asdict(route),free=asdict(free)))
         state=dict(status='running',round=0,strength=initial_strength,front_posture_finetune=args.front_posture_finetune,selected_checkpoint=str(checkpoint),
-                   reference=str(REFERENCE),reference_sha256=hashlib.sha256(REFERENCE.read_bytes()).hexdigest(),
+                   reference=str(reference_path),reference_sha256=hashlib.sha256(reference_path.read_bytes()).hexdigest(),
+                   nominal_gait_first=args.nominal_gait_first,require_normal_gait=args.require_normal_gait,
+                   phase='nominal_gait' if args.nominal_gait_first else 'training',
                    visual_source=args.visual_source,folder=str(folder),records=[],
-                   goal='完整域随机化下六档固定120+独立120路线全完成、速度/60ms步态通过，33项变速停车及20/35/50度边界通过')
+                   goal=('先在标称环境纠正四足接触与落脚；数值和视频复核均通过后再训练域随机化' if args.nominal_gait_first
+                         else '完整域随机化下六档固定120+独立120路线全完成、速度/60ms步态通过，33项变速停车及20/35/50度边界通过'))
     save_json(folder/'status.json',state);print(f'CONTINUAL_DIR={folder}',flush=True)
 
     def run(module,arguments,label):
@@ -107,9 +122,10 @@ def main():
             subprocess.run([sys.executable,'-m',module,*map(str,arguments)],cwd=ROOT,stdout=f,stderr=subprocess.STDOUT,check=True)
         return log.read_text()
 
-    def evaluate_route(ckpt,level,seeds,label,pitch=None,route_config=None):
+    def evaluate_route(ckpt,level,seeds,label,pitch=None,route_config=None,video=None):
         arguments=['--checkpoint',ckpt,'--num-envs',4,'--seeds',*seeds,'--level',level]
         if pitch is not None:arguments+=['--camera-pitch',pitch]
+        if video is not None:arguments+=['--video',video]
         if route_config is not None:
             config_path=folder/(label+'_environment.json');save_json(config_path,asdict(route_config))
             arguments+=['--env-config',config_path]
@@ -127,7 +143,14 @@ def main():
         return (report['success_rate']==1. and report['vx_rmse']<=.1 and gait_passed(report)
                 and not report['partial_evaluation'] and report['numerical_failure_rate']==0.)
 
-    def stance_check(ckpt,label,seed=56200):
+    def stance_check(ckpt,label,seed=56200,seeds=None):
+        if args.nominal_gait_first or args.require_normal_gait:
+            output=folder/(label+'_normal_gait.json')
+            arguments=['--checkpoint',ckpt,'--output',output,'--seeds',*(seeds or [seed])]
+            if args.nominal_gait_first:arguments+=['--nominal']
+            run('scripts.audit_normal_gait',arguments,label+'_normal_gait')
+            report=json.loads(output.read_text())
+            return dict(passed=report['passed'],error=report['error'],report=str(output))
         output=folder/(label+'_front_stance.json')
         run('scripts.audit_front_stance',['--checkpoint',ckpt,'--output',output,'--seed',seed],label+'_front_stance')
         report=json.loads(output.read_text())
@@ -146,20 +169,22 @@ def main():
         for level in (0,17):
             path,report=evaluate_route(ckpt,level,[54000],label+f'_route{level}',route_config=route_config)
             reports.append(report);paths.append(str(path))
-        path,command=evaluate_commands(ckpt,cfg,label+'_commands')
-        paths.append(str(path))
+        if args.nominal_gait_first:
+            command=dict(pass_rate=None,records=[])
+        else:
+            path,command=evaluate_commands(ckpt,cfg,label+'_commands');paths.append(str(path))
         stop=[r['stop'] for r in command['records'] if r['scenario']=='stop']
         gait_safe=all(gait_passed(r) for r in reports)
         score=(100*min(r['success_rate'] for r in reports)+30*sum(r['success_rate'] for r in reports)/2
                -10*sum(r['vx_rmse'] for r in reports)-10*sum(gait_error(r) for r in reports)
-               +20*command['pass_rate']-10*sum(r['maximum_drift_m'] for r in stop)/len(stop))
+               +20*(command['pass_rate'] or 0.)-10*sum(r['maximum_drift_m'] for r in stop)/max(len(stop),1))
         if not gait_safe:score-=1000.
-        stance=stance_check(ckpt,label) if args.front_posture_finetune else dict(passed=True,error=0.)
+        stance=stance_check(ckpt,label) if (args.front_posture_finetune or args.require_normal_gait) else dict(passed=True,error=0.)
         score-=30*stance['error']
         return dict(score=score,front_stance=stance,gait_safe=gait_safe,route_min_success=min(r['success_rate'] for r in reports),
                     route_pass=all(route_pass(r) for r in reports),command_pass_rate=command['pass_rate'],
                     stop_passes=sum(r['passed'] for r in stop),reports=paths,
-                    passed=all(route_pass(r) for r in reports) and command['pass_rate']==1. and stance['passed'])
+                    passed=all(route_pass(r) for r in reports) and (args.nominal_gait_first or command['pass_rate']==1.) and stance['passed'])
 
     def full_validation(ckpt,cfg,label,final=False,route_config=None):
         paths=[]
@@ -167,6 +192,24 @@ def main():
             path,report=evaluate_route(ckpt,level,list(range(54000,54005)),label+f'_selection{level}',route_config=route_config)
             paths.append(str(path))
             if not route_pass(report):return dict(passed=False,reports=paths,reason='selection_route')
+        if args.nominal_gait_first:
+            fresh_start=54800+state.get('independent_attempts',0)*10
+            state['independent_attempts']=state.get('independent_attempts',0)+1
+            for level in (0,6,9,12,15,17):
+                path,report=evaluate_route(ckpt,level,list(range(fresh_start,fresh_start+5)),
+                    label+f'_nominal_fresh{level}',route_config=route_config)
+                paths.append(str(path))
+                if not route_pass(report):return dict(passed=False,reports=paths,reason='nominal_fresh_route')
+            normal=stance_check(ckpt,label+'_independent',seeds=[56300,56301,56302])
+            if not normal['passed']:return dict(passed=False,reports=paths,normal_gait=normal,reason='contact_or_placement')
+            videos=[]
+            for level in (0,17):
+                video=folder/(label+f'_review_{level}.mp4')
+                path,report=evaluate_route(ckpt,level,[fresh_start+5],label+f'_review{level}',
+                    route_config=route_config,video=video)
+                paths.append(str(path));videos.append(str(video))
+                if not route_pass(report):return dict(passed=False,reports=paths,reason='review_video_route')
+            return dict(passed=True,reports=paths,normal_gait=normal,videos=videos,randomization_enabled=False)
         path,report=evaluate_commands(ckpt,cfg,label+'_commands_full')
         if report['pass_rate']!=1.:return dict(passed=False,reports=paths+[str(path)],reason='commands')
         if not final:return dict(passed=True,reports=paths,commands=str(path))
@@ -185,7 +228,7 @@ def main():
                 if not route_pass(report):return dict(passed=False,reports=paths+fresh+[str(path)],reason='camera_boundary')
         path,report=evaluate_commands(ckpt,cfg,label+'_commands_independent',seeds=(54700,54701,54702))
         if report['pass_rate']!=1.:return dict(passed=False,reports=paths+fresh+[str(path)],reason='fresh_commands')
-        stance=stance_check(ckpt,label+'_independent',seed=56300) if args.front_posture_finetune else None
+        stance=stance_check(ckpt,label+'_independent',seed=56300) if (args.front_posture_finetune or args.require_normal_gait) else None
         if stance and not stance['passed']:
             return dict(passed=False,reports=paths+fresh,front_stance=stance,reason='front_stance')
         return dict(passed=True,reports=paths,height_evaluations=fresh,commands=str(path),front_stance=stance)
@@ -217,7 +260,7 @@ def main():
         while True:
             state['round']+=1;round_id=state['round'];label=f'round_{round_id:05d}'
             route_cfg,free_cfg=configured_tasks(strength,route_envs,free_envs,85000+round_id)
-            if not pending_run and not args.front_posture_finetune and stale and stale%args.visual_refresh_every==0:
+            if not pending_run and not args.front_posture_finetune and not args.require_normal_gait and stale and stale%args.visual_refresh_every==0:
                 # PPO固定视觉编码器以控制显存；停滞时单独顺序BPTT训练视觉，教师始终冻结。
                 aligned=deepcopy(route_cfg)
                 aligned.randomization.frame_delay_steps=0;aligned.randomization.frame_dropout=0.
@@ -238,12 +281,15 @@ def main():
                     screen=visual_result,selected=visual_accepted,teacher=str(teacher),teacher_frozen=True))
                 if visual_accepted:best=visual_ckpt;best_screen=visual_result
                 save_json(folder/'status.json',state)
-            arguments=['--resume',best,'--reference',REFERENCE,'--visual',args.visual_source,
+            arguments=['--resume',best,'--reference',reference_path,'--visual',args.visual_source,
                        '--iterations',args.updates_per_round,'--route-envs',route_envs,'--free-envs',free_envs,
                        '--strength',strength,'--anchor-coef',anchor,'--actor-lr',lr,
                        '--std',.02 if args.front_posture_finetune else .04,'--stop-script-fraction',stop_fraction,'--seed',85000+round_id]
             if args.front_posture_finetune:
                 arguments+=['--front-posture-scale',min(1.,.1*round_id),'--free-anchor-weight',0.]
+            if args.nominal_gait_first:arguments+=['--nominal-gait']
+            if args.require_normal_gait:
+                arguments+=['--normal-foot-scale',1.,'--free-anchor-weight',0.]
             if freeze:arguments+=['--freeze-proprio']
             try:
                 if pending_run:
@@ -278,6 +324,42 @@ def main():
                 record['validation']=validation
                 if validation['passed']:
                     best=candidate;best_screen=result
+                    if args.nominal_gait_first:
+                        checksum=hashlib.sha256(Path(best).read_bytes()).hexdigest()
+                        state.update(status='nominal_gait_passed_needs_visual_review',checkpoint=best,
+                                     selected_checkpoint=best,best_screen=result,selected_score=result['score'],validation=validation,stage='gait_video_review')
+                        save_json(folder/'status.json',state)
+                        save_json(folder/'gait_review.template.json',dict(approved=False,checkpoint_sha256=checksum,
+                            contact_timing_reviewed=False,foot_placement_reviewed=False,videos=validation['videos']))
+                        if shutil.which('notify-send'):
+                            try:
+                                subprocess.run(['notify-send','Go2标称步态数值通过',
+                                    '接触、落点和路线数值门槛通过，等待视频复核；域随机化仍关闭。'],timeout=10,check=False)
+                            except (OSError,subprocess.TimeoutExpired) as error:
+                                print(f'GAIT_REVIEW_NOTIFICATION_FAILED={error}',flush=True)
+                        while True:
+                            review_path=folder/'gait_review.json'
+                            try:review=json.loads(review_path.read_text()) if review_path.exists() else {}
+                            except json.JSONDecodeError:review={}
+                            if (review.get('approved') is True and review.get('checkpoint_sha256')==checksum
+                                and review.get('contact_timing_reviewed') is True and review.get('foot_placement_reviewed') is True
+                                and review.get('videos')==validation['videos']
+                                and all(Path(v).is_file() for v in validation['videos'])):break
+                            time.sleep(30)
+                        # 只有同一权重的实际视频复核通过，才开放随机化；使用正常步态参考保留落脚方式。
+                        args.nominal_gait_first=False;args.front_posture_finetune=False;args.require_normal_gait=True
+                        reference_path=Path(best);ref=torch.load(best,map_location='cpu',weights_only=False)
+                        source=env_from_dict(ref['env_config']);strength=.25;anchor=20.;lr=5e-6
+                        freeze=True;stale=0;route_envs=args.route_envs;free_envs=args.free_envs;stop_fraction=.25
+                        state.update(status='running',phase='domain_randomization',strength=strength,
+                            nominal_gait_first=False,front_posture_finetune=False,require_normal_gait=True,
+                            nominal_gait_validation=validation,gait_review=str(review_path),reference=str(reference_path),
+                            reference_sha256=checksum,selected_checkpoint=best)
+                        next_route,next_free=configured_tasks(strength,route_envs,free_envs,85000+round_id)
+                        best_screen=screen(best,next_free,label+'_start_randomization',route_config=next_route)
+                        state.update(best_screen=best_screen,selected_score=best_screen['score'])
+                        save_json(folder/'status.json',state)
+                        continue
                     if strength==1.:
                         state.update(status='performance_passed_needs_delivery_review',stage='review',
                                      checkpoint=best,validation=validation)
@@ -296,7 +378,7 @@ def main():
             else:
                 anchor=max(5.,anchor*.98);freeze=False
                 route_envs=args.route_envs;free_envs=args.free_envs
-            if best_screen['stop_passes']<3 and stale>=2:stop_fraction=min(.6,stop_fraction+.05)
+            if not args.nominal_gait_first and best_screen['stop_passes']<3 and stale>=2:stop_fraction=min(.6,stop_fraction+.05)
             if stale>=5:lr=max(1e-6,lr*.8);stale=0
             state.update(status='running',strength=strength,selected_checkpoint=best,
                          selected_score=best_screen['score'],best_screen=best_screen,

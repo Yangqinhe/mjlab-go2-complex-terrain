@@ -46,6 +46,7 @@ def task_configs(source, strength, route_envs, free_envs, seed):
                       ('depth_patch_probability',.15),('frame_dropout',.01)]:
         setattr(d,name,full*strength)
     d.action_delay_steps=int(strength>=.5);d.frame_delay_steps=int(strength>=.5)
+    d.enabled=strength>0
     # 视角由20～30逐步扩到20～50；四类侧墙始终启用，最终必须strength=1验收。
     free=free_training_config(route,True)
     free.num_envs=free_envs;free.seed=seed+1;free.randomization.seed=seed+2001
@@ -56,12 +57,23 @@ def task_configs(source, strength, route_envs, free_envs, seed):
     free.training_reward.standing_angular=5.
     free.training_reward.tracking_yaw_scale=.06
     free.training_reward.tracking_yaw=1.
+    if strength==0:
+        # 标称步态阶段：固定相机、物理和地形几何；自由任务也固定0.3直行。
+        for cfg in (route,free):
+            cfg.randomization.enabled=False
+            cfg.camera.pitch_down_degrees=25.
+            cfg.terrain.seed=56000
+        free.command.vx=(.3,.3);free.command.wz=(0.,0.)
+        free.command.stop_fraction=0.;free.command.anchor_fraction=0.
+        free.command.stop_script_fraction=0.
     return route,free
 
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--resume')
+    p.add_argument('--nominal-gait',action='store_true')
+    p.add_argument('--normal-foot-scale',type=float,default=0.)
     p.add_argument('--front-posture-scale',type=float,default=0.)
     p.add_argument('--reference',default=str(REFERENCE))
     p.add_argument('--visual',default=str(VISUAL))
@@ -82,7 +94,8 @@ def main():
     p.add_argument('--freeze-proprio',action=argparse.BooleanOptionalAction,default=False)
     p.add_argument('--stop-script-fraction',type=float,default=.25)
     args=p.parse_args()
-    if not 0<args.strength<=1:p.error('strength必须在(0,1]，不能以关闭随机化作为完成条件')
+    if not (0<args.strength<=1 or (args.strength==0 and args.nominal_gait)):
+        p.error('只有显式nominal-gait阶段允许strength=0，不能将其视作域随机化完成')
     torch.set_num_threads(1)
     reference,source,reference_saved=load_policy(args.reference)
     reference.requires_grad_(False)
@@ -115,10 +128,14 @@ def main():
         agent.actor_optimizer.state.pop(agent.actor.log_std,None)
     with torch.no_grad():agent.actor.log_std.add_(torch.log(torch.tensor(args.std)/agent.actor.log_std.exp().mean()))
     route_cfg,free_cfg=task_configs(source,args.strength,args.route_envs,args.free_envs,args.seed)
-    free_cfg.command.stop_script_fraction=args.stop_script_fraction
+    if not args.nominal_gait:free_cfg.command.stop_script_fraction=args.stop_script_fraction
     if args.front_posture_scale:
         from env.posture import configure_front_posture
         for cfg in (route_cfg,free_cfg):configure_front_posture(cfg,args.front_posture_scale)
+    if args.nominal_gait or args.normal_foot_scale:
+        from env.posture import configure_normal_gait
+        scale=args.normal_foot_scale or args.front_posture_scale
+        for cfg in (route_cfg,free_cfg):configure_normal_gait(cfg,scale)
     folder=new_run('student_ppo',route_cfg,training)
     save_json(folder/'task_configs.json',dict(route=asdict(route_cfg),free=asdict(free_cfg),strength=args.strength))
     metadata=dict(status='running',parent=args.resume or args.reference,reference=args.reference,
@@ -140,7 +157,8 @@ def main():
         visuals=[VisualRuntime(t,agent.actor.visual_encoder) for t in tasks]
         free_reference_visual=VisualRuntime(free,free_reference.visual_encoder)
         reference_visual=VisualRuntime(route,reference.visual_encoder,
-            DepthSensor(route,DepthConfig(),geometry_groups=[0],randomize=False))
+            DepthSensor(route,DepthConfig(**reference_saved['env_config'].get('camera',{})),
+                geometry_groups=[0,4] if reference_saved['env_config']['terrain'].get('surroundings') else [0],randomize=False))
         torch.manual_seed(args.seed)
         deployment=deployment_config(route);deployment['proprio_only']=False
         save_json(folder/'deployment.json',deployment)

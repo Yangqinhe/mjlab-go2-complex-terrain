@@ -106,9 +106,13 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                         flight_max = torch.maximum(flight_max, duration)
                     if writer:
                         contacts = task.gait.previous_contact[0].cpu().tolist()
+                        from env.posture import foot_positions_body
+                        foot_xyz=foot_positions_body(task)[0].cpu().tolist()
                         gait_trace.append(dict(seed=terrain_seed, seconds=(step+1)*task.dt,
                             **dict(zip(('FL', 'FR', 'RL', 'RR'), map(int, contacts))),
                             height=info['height'][0].item(),
+                            **{f'{leg}_{axis}_body':foot_xyz[i][j] for i,leg in enumerate(('FL','FR','RL','RR'))
+                               for j,axis in enumerate(('x','y','z'))},
                             base_z=task.robot.data.root_link_pos_w[0, 2].item(),
                             vx=info['velocity'][0].item()))
                     if writer and step*task.dt+1e-9 >= next_frame:
