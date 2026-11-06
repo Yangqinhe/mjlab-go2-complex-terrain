@@ -1,0 +1,224 @@
+"""持续联合训练学生：按真实路线/指令共同选模，完整随机化验收通过前不按轮数结束。"""
+
+from copy import deepcopy
+from dataclasses import asdict
+from datetime import datetime
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+import torch
+
+from env.gait import gait_error, gait_passed
+from rl.config import TrainConfig
+from rl.run_io import ROOT, env_from_dict, new_run, save_json
+from scripts.train_student_multitask import REFERENCE, VISUAL, task_configs
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--updates-per-round',type=int,default=100)
+    parser.add_argument('--route-envs',type=int,default=384)
+    parser.add_argument('--free-envs',type=int,default=128)
+    parser.add_argument('--visual-source',default=str(VISUAL))
+    parser.add_argument('--initial-checkpoint')
+    parser.add_argument('--visual-updates-per-refresh',type=int,default=100)
+    parser.add_argument('--visual-refresh-every',type=int,default=3)
+    parser.add_argument('--screen-only',action='store_true',help='只用于候选初始化对比，不是持续训练默认行为')
+    args=parser.parse_args()
+    torch.set_num_threads(1)
+    folder=ROOT/'outputs'/f'{datetime.now():%Y%m%d_%H%M%S_%f}_continual_student'
+    folder.mkdir()
+    ref=torch.load(REFERENCE,map_location='cpu',weights_only=False)
+    phi=torch.load(args.visual_source,map_location='cpu',weights_only=False)
+    source=env_from_dict(ref['env_config'])
+    route,free=task_configs(source,.25,args.route_envs,args.free_envs,85000)
+    training=TrainConfig(**ref['train_config'])
+    initial=new_run('student_ppo',route,training)
+    seed=torch.load(args.initial_checkpoint,map_location='cpu',weights_only=False) if args.initial_checkpoint else dict(ref)
+    seed['actor']=dict(seed['actor'])
+    if not args.initial_checkpoint:
+        for k,v in phi['actor'].items():
+            if k.startswith('visual_encoder.'):seed['actor'][k]=v
+    seed['env_config']=asdict(route)
+    seed['initialization']=dict(common_source=args.initial_checkpoint or str(REFERENCE),
+                                visual_source='included in checkpoint' if args.initial_checkpoint else args.visual_source,ppo_updates=0)
+    checkpoint=initial/'checkpoints/final.pt';torch.save(seed,checkpoint)
+    save_json(initial/'metadata.json',dict(status='initialization_only',**seed['initialization']))
+    deployment=deepcopy(ref['deployment']);deployment.update(camera=asdict(route.camera),
+        randomization=asdict(route.randomization),depth_geometry_groups=[0,4])
+    save_json(initial/'deployment.json',deployment)
+    save_json(initial/'task_configs.json',dict(route=asdict(route),free=asdict(free)))
+    state=dict(status='running',round=0,strength=.25,selected_checkpoint=str(checkpoint),
+               reference=str(REFERENCE),reference_sha256=hashlib.sha256(REFERENCE.read_bytes()).hexdigest(),
+               visual_source=args.visual_source,folder=str(folder),records=[],
+               goal='完整域随机化下六档固定120+独立120路线全完成、速度/60ms步态通过，33项变速停车及20/35/50度边界通过')
+    save_json(folder/'status.json',state);print(f'CONTINUAL_DIR={folder}',flush=True)
+
+    def run(module,arguments,label):
+        log=folder/(label+'.log')
+        state.update(stage=label,log=str(log));save_json(folder/'status.json',state)
+        with log.open('w') as f:
+            subprocess.run([sys.executable,'-m',module,*map(str,arguments)],cwd=ROOT,stdout=f,stderr=subprocess.STDOUT,check=True)
+        return log.read_text()
+
+    def evaluate_route(ckpt,level,seeds,label,pitch=None,route_config=None):
+        arguments=['--checkpoint',ckpt,'--num-envs',4,'--seeds',*seeds,'--level',level]
+        if pitch is not None:arguments+=['--camera-pitch',pitch]
+        if route_config is not None:
+            config_path=folder/(label+'_environment.json');save_json(config_path,asdict(route_config))
+            arguments+=['--env-config',config_path]
+        text=run('scripts.evaluate',arguments,label)
+        path=Path(next(x.split('=',1)[1] for x in text.splitlines() if x.startswith('EVALUATION=')))
+        return path,json.loads(path.read_text())
+
+    def evaluate_commands(ckpt,cfg,label,seeds=(54500,54501,54502)):
+        config=folder/(label+'_config.json');save_json(config,asdict(cfg))
+        output=folder/(label+'.json')
+        run('scripts.evaluate_commands',['--checkpoint',ckpt,'--env-config',config,'--seeds',*seeds,'--output',output],label)
+        return output,json.loads(output.read_text())
+
+    def route_pass(report):
+        return (report['success_rate']==1. and report['vx_rmse']<=.1 and gait_passed(report)
+                and not report['partial_evaluation'] and report['numerical_failure_rate']==0.)
+
+    def screen(ckpt,cfg,label,route_config=None):
+        reports=[];paths=[]
+        for level in (0,17):
+            path,report=evaluate_route(ckpt,level,[54000],label+f'_route{level}',route_config=route_config)
+            reports.append(report);paths.append(str(path))
+        path,command=evaluate_commands(ckpt,cfg,label+'_commands')
+        paths.append(str(path))
+        stop=[r['stop'] for r in command['records'] if r['scenario']=='stop']
+        gait_safe=all(gait_passed(r) for r in reports)
+        score=(100*min(r['success_rate'] for r in reports)+30*sum(r['success_rate'] for r in reports)/2
+               -10*sum(r['vx_rmse'] for r in reports)-10*sum(gait_error(r) for r in reports)
+               +20*command['pass_rate']-10*sum(r['maximum_drift_m'] for r in stop)/len(stop))
+        if not gait_safe:score-=1000.
+        return dict(score=score,gait_safe=gait_safe,route_min_success=min(r['success_rate'] for r in reports),
+                    route_pass=all(route_pass(r) for r in reports),command_pass_rate=command['pass_rate'],
+                    stop_passes=sum(r['passed'] for r in stop),reports=paths,
+                    passed=all(route_pass(r) for r in reports) and command['pass_rate']==1.)
+
+    def full_validation(ckpt,cfg,label,final=False,route_config=None):
+        paths=[]
+        for level in (0,6,9,12,15,17):
+            path,report=evaluate_route(ckpt,level,list(range(54000,54005)),label+f'_selection{level}',route_config=route_config)
+            paths.append(str(path))
+            if not route_pass(report):return dict(passed=False,reports=paths,reason='selection_route')
+        path,report=evaluate_commands(ckpt,cfg,label+'_commands_full')
+        if report['pass_rate']!=1.:return dict(passed=False,reports=paths+[str(path)],reason='commands')
+        if not final:return dict(passed=True,reports=paths,commands=str(path))
+        # 独立seed仅在候选通过固定选择后使用；失败数据保留，下次候选用新的独立组。
+        fresh_start=54800+state.get('independent_attempts',0)*10
+        state['independent_attempts']=state.get('independent_attempts',0)+1
+        save_json(folder/'status.json',state)
+        fresh=[]
+        for level in (0,6,9,12,15,17):
+            path,report=evaluate_route(ckpt,level,list(range(fresh_start,fresh_start+5)),label+f'_fresh{level}',route_config=route_config)
+            fresh.append(str(path))
+            if not route_pass(report):return dict(passed=False,reports=paths+fresh,reason='fresh_route')
+        for pitch in (20,35,50):
+            for level in (0,17):
+                path,report=evaluate_route(ckpt,level,[54900],label+f'_pitch{pitch}_level{level}',pitch,route_config=route_config)
+                if not route_pass(report):return dict(passed=False,reports=paths+fresh+[str(path)],reason='camera_boundary')
+        path,report=evaluate_commands(ckpt,cfg,label+'_commands_independent',seeds=(54700,54701,54702))
+        if report['pass_rate']!=1.:return dict(passed=False,reports=paths+fresh+[str(path)],reason='fresh_commands')
+        return dict(passed=True,reports=paths,height_evaluations=fresh,commands=str(path))
+
+    strength=.25;best=str(checkpoint);best_screen=None
+    anchor=20.;lr=5e-6;stale=0;stop_fraction=.25;freeze=True
+    route_envs=args.route_envs;free_envs=args.free_envs
+    errors=0
+    try:
+        best_screen=screen(best,free,'initial',route_config=route)
+        state.update(initial_screen=best_screen,selected_score=best_screen['score']);save_json(folder/'status.json',state)
+        if args.screen_only:
+            state.update(status='screen_only_finished');save_json(folder/'status.json',state);return
+        while True:
+            state['round']+=1;round_id=state['round'];label=f'round_{round_id:05d}'
+            route_cfg,free_cfg=task_configs(source,strength,route_envs,free_envs,85000+round_id)
+            if stale and stale%args.visual_refresh_every==0:
+                # PPO固定视觉编码器以控制显存；停滞时单独顺序BPTT训练视觉，教师始终冻结。
+                aligned=deepcopy(route_cfg)
+                aligned.randomization.frame_delay_steps=0;aligned.randomization.frame_dropout=0.
+                aligned.num_envs=64
+                config_path=folder/(label+'_visual_environment.json');save_json(config_path,asdict(aligned))
+                teacher=ROOT/'outputs/20261105_212457_360463_teacher_seed62001/checkpoints/final.pt'
+                text=run('scripts.distill_student',['--teacher',teacher,'--resume',best,
+                    '--env-config',config_path,'--num-envs',64,'--iterations',args.visual_updates_per_refresh,
+                    '--seed',87000+round_id,'--terrain-seed',88000+round_id,
+                    '--visual-steps',20,'--burn-in',5,'--sequence-batch',16,'--visual-lr',2e-5,
+                    '--common-lr',0,'--freeze-common','--latent-coef',.02,'--teacher-mix',.5,
+                    '--training-levels',0,6,9,12,15,17,17,17],label+'_visual_train')
+                visual_dir=Path(next(x.split('=',1)[1] for x in text.splitlines() if x.startswith('DISTILLATION_FINISHED=')))
+                visual_ckpt=str(visual_dir/'checkpoints/final.pt')
+                visual_result=screen(visual_ckpt,free_cfg,label+'_visual',route_config=route_cfg)
+                visual_accepted=visual_result['score']>best_screen['score']
+                state.setdefault('visual_records',[]).append(dict(round=round_id,checkpoint=visual_ckpt,
+                    screen=visual_result,selected=visual_accepted,teacher=str(teacher),teacher_frozen=True))
+                if visual_accepted:best=visual_ckpt;best_screen=visual_result
+                save_json(folder/'status.json',state)
+            arguments=['--resume',best,'--reference',REFERENCE,'--visual',args.visual_source,
+                       '--iterations',args.updates_per_round,'--route-envs',route_envs,'--free-envs',free_envs,
+                       '--strength',strength,'--anchor-coef',anchor,'--actor-lr',lr,
+                       '--std',.04,'--stop-script-fraction',stop_fraction,'--seed',85000+round_id]
+            if freeze:arguments+=['--freeze-proprio']
+            try:
+                text=run('scripts.train_student_multitask',arguments,label+'_train')
+                run_dir=Path(next(x.split('=',1)[1] for x in text.splitlines() if x.startswith('MULTITASK_FINISHED=')))
+                candidate=str(run_dir/'checkpoints/final.pt')
+                metadata=json.loads((run_dir/'metadata.json').read_text())
+                if metadata['numerical_failures']:raise RuntimeError('训练出现数值异常，拒绝选为下一轮来源')
+                cfg=env_from_dict(json.loads((run_dir/'task_configs.json').read_text())['free'])
+                result=screen(candidate,cfg,label,route_config=route_cfg)
+                errors=0
+            except subprocess.CalledProcessError as error:
+                errors+=1;lr=max(1e-6,lr/2)
+                state.setdefault('errors',[]).append(dict(round=round_id,error=str(error),log=state['log']))
+                save_json(folder/'status.json',state)
+                if errors>=3:raise
+                continue
+            accepted=result['score']>best_screen['score']
+            record=dict(round=round_id,strength=strength,checkpoint=candidate,screen=result,
+                        selected=accepted,anchor=anchor,actor_lr=lr,freeze_proprio=freeze)
+            state['records'].append(record)
+            if accepted:
+                best=candidate;best_screen=result;stale=0
+            else:stale+=1
+            if result['passed']:
+                validation=full_validation(candidate,cfg,label,final=strength==1.,route_config=route_cfg)
+                record['validation']=validation
+                if validation['passed']:
+                    best=candidate;best_screen=result
+                    if strength==1.:
+                        state.update(status='performance_passed_needs_delivery_review',stage='review',
+                                     checkpoint=best,validation=validation)
+                        save_json(folder/'status.json',state);print(f'CONTINUAL_PERFORMANCE_PASSED={folder}',flush=True);return
+                    strength=min(1.,strength+.25)
+                    next_route,next_free=task_configs(source,strength,route_envs,free_envs,85000+round_id)
+                    # 新强度必须重新测基线，不能拿弱随机化的高分压住后续选模。
+                    best_screen=screen(best,next_free,label+'_next_strength',route_config=next_route)
+                    stale=0
+            if best_screen['route_min_success']<1.:
+                anchor=min(80.,anchor*1.1);freeze=True
+                route_envs=args.route_envs+args.free_envs//2;free_envs=args.free_envs//2
+            else:
+                anchor=max(5.,anchor*.98);freeze=False
+                route_envs=args.route_envs;free_envs=args.free_envs
+            if best_screen['stop_passes']<3 and stale>=2:stop_fraction=min(.6,stop_fraction+.05)
+            if stale>=5:lr=max(1e-6,lr*.8);stale=0
+            state.update(status='running',strength=strength,selected_checkpoint=best,
+                         selected_score=best_screen['score'],best_screen=best_screen,
+                         next_anchor=anchor,next_lr=lr)
+            save_json(folder/'status.json',state)
+            print(json.dumps(dict(round=round_id,strength=strength,selected=best,score=best_screen['score'])),flush=True)
+    except BaseException as error:
+        state.update(status='interrupted' if isinstance(error,KeyboardInterrupt) else 'failed_needs_fix',error=str(error))
+        save_json(folder/'status.json',state);raise
+
+
+if __name__=='__main__':main()

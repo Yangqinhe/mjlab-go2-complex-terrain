@@ -20,6 +20,7 @@ class TrainConfig:
     entropy_coef: float = 0.001
     target_kl: float = 0.015
     velocity_coef: float = 0.01
+    anchor_coef: float = 0.  # 可选同状态学生参考约束，默认关闭，仍受PPO的KL预算限制。
     kl_interval: int = 1
     adaptive_lr: bool = False
     kl_stop_multiplier: float = 1.0

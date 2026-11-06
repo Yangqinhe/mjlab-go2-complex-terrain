@@ -4,6 +4,7 @@ import argparse
 import hashlib
 from dataclasses import asdict
 import json
+from pathlib import Path
 import time
 
 import torch
@@ -15,13 +16,14 @@ from rl.algorithms.perceptive_networks import PerceptiveActor, PrivilegedCritic
 from rl.algorithms.ppo import PPO
 from rl.distillation import collect_sequences, update_sequences
 from rl.run_io import (append_csv, deployment_config, load_policy, new_run,
-                       restore_curriculum, save_checkpoint, save_json)
+                       restore_curriculum, save_checkpoint, save_json, env_from_dict)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--teacher', required=True)
     parser.add_argument('--resume')
+    parser.add_argument('--env-config',help='显式部署相机/域随机化环境；顺序采样需关闭帧延迟和丢帧')
     parser.add_argument('--seed', type=int, help='采样与仿真初始化seed')
     parser.add_argument('--terrain-seed', type=int, help='地形几何seed，与采样seed分别记录')
     parser.add_argument('--num-envs', type=int, default=256)
@@ -44,6 +46,10 @@ def main():
     torch.set_num_threads(1)
     teacher, env_config, checkpoint = load_policy(args.teacher, args.device)
     teacher.requires_grad_(False)
+    if args.env_config:
+        env_config=env_from_dict(json.loads(Path(args.env_config).read_text()))
+    if env_config.randomization.enabled and (env_config.randomization.frame_delay_steps or env_config.randomization.frame_dropout):
+        parser.error('当前顺序蒸馏需对齐帧时序，请在专用采样配置关闭帧传输延迟/丢帧；部署/PPO配置保持独立')
     env_config.num_envs = args.num_envs
     if args.seed is not None:
         env_config.seed = args.seed

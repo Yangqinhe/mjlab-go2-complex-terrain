@@ -16,12 +16,18 @@ import torch
 from env.training_task import Go2Task
 from env.perception.runtime import VisualRuntime
 from env.gait import summarize_gait
-from rl.run_io import load_policy, save_json
+from rl.run_io import load_policy, save_json, env_from_dict
 
 
 def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
-             video=None, max_steps=None, route_following=None, visual_ablation='none'):
+             video=None, max_steps=None, route_following=None, visual_ablation='none',
+             camera_pitch=None, env_config=None):
     actor, original, saved = load_policy(checkpoint, device)
+    if env_config:
+        original=env_from_dict(json.loads(Path(env_config).read_text()))
+    if camera_pitch is not None:
+        original.camera.pitch_down_degrees=camera_pitch
+        original.randomization.camera_pitch_degrees=(camera_pitch,camera_pitch)
     if visual_ablation != 'none' and (actor.mode != 'student' or actor.proprio_only):
         raise ValueError('视觉消融只适用于视觉学生')
 
@@ -48,6 +54,9 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
             config = copy.deepcopy(original)
             config.num_envs, config.seed = num_envs, 1000+terrain_seed
             config.terrain.seed = terrain_seed
+            if config.randomization.enabled:
+                # 选择集物理/相机扰动与训练seed解耦，相同评估seed比较相同条件。
+                config.randomization.seed = 200000+terrain_seed
             task = Go2Task(config, device, curriculum=False)
             try:
                 terrain = task.env.scene.terrain
@@ -131,7 +140,9 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                         done = torch.ones_like(done)
                     new = (done & ~complete).nonzero(as_tuple=False).flatten()
                     for i in new.tolist():
-                        records.append(dict(seed=terrain_seed, layout=int(terrain.terrain_types[i]),
+                        records.append(dict(seed=terrain_seed, randomization_seed=config.randomization.seed,
+                            camera_pitch=(visual.sensor.pitch_degrees[i].item() if visual and config.randomization.enabled else config.camera.pitch_down_degrees),
+                            layout=int(terrain.terrain_types[i]),
                             level=level, success=bool(info['success'][i]), fall=bool(info['fall'][i]),
                             outside=bool(info['outside'][i]), timeout=bool(truncated[i]),
                             numerical_failure=bool(info['numerical_failure'][i]),
@@ -170,7 +181,8 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                   level=level, seeds=list(seeds), visual_ablation=visual_ablation,
                   proprio_only=actor.proprio_only,
                   route_following=original.route.enabled,
-                  route_override=route_following,
+                  route_override=route_following,camera_pitch_override=camera_pitch,
+                  env_config_override=env_config,
                   terrain_obstacles=original.terrain.obstacles,
                   stair_height=original.terrain.step_height(level/max(original.terrain.levels-1, 1))
                                if original.terrain.obstacles else 0.,
@@ -198,6 +210,8 @@ def main():
     parser.add_argument('--level', type=int, default=0)
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--video')
+    parser.add_argument('--camera-pitch',type=float)
+    parser.add_argument('--env-config')
     parser.add_argument('--max-steps', type=int)
     parser.add_argument('--route-following', action='store_true', default=None)
     parser.add_argument('--visual-ablation', choices=['none', 'far', 'swap_frames', 'zero_latent'],
@@ -205,7 +219,8 @@ def main():
     args = parser.parse_args()
     torch.set_num_threads(1)
     report = evaluate(args.checkpoint, args.num_envs, args.seeds, args.level,
-                      args.device, args.video, args.max_steps, args.route_following, args.visual_ablation)
+                      args.device, args.video, args.max_steps, args.route_following, args.visual_ablation,
+                      args.camera_pitch,args.env_config)
     stamp = datetime.now(ZoneInfo('Asia/Hong_Kong')).strftime('%Y%m%d_%H%M%S_%f')
     folder = Path(args.checkpoint).resolve().parent.parent/'evaluations'
     folder.mkdir(exist_ok=True)

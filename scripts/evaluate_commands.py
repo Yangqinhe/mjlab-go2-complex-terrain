@@ -35,6 +35,7 @@ def evaluate(checkpoint, env_config, seeds=(50100, 50101, 50102), seconds=20., d
             visual = VisualRuntime(task, actor.visual_encoder)
             task.schedule.remaining[:] = 1000000
             task.schedule.anchor[:] = False
+            task.schedule.stop_script[:] = False
             target = torch.tensor([[vx, 0., wz] for vx, wz, _ in scenarios], device=device)
             alive = torch.ones(config.num_envs, dtype=torch.bool, device=device)
             errors, references, velocities, positions, contacts, active = [], [], [], [], [], []

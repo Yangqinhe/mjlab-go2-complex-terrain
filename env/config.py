@@ -20,6 +20,8 @@ class VelocityCommandConfig:
     yaw_acceleration: float = .5
     stop_fraction: float = .15
     anchor_fraction: float = .2
+    stop_script_fraction: float = 0.
+    stop_hold_seconds: tuple[float, float] | None = None
 
 
 @dataclass
@@ -58,6 +60,10 @@ class GaitConfig:
 class TrainingRewardConfig:
     tracking_xy: float = 1.5
     tracking_yaw: float = .5
+    tracking_yaw_scale: float = .25
+    standing_velocity: float = 5.
+    standing_joint_velocity: float = .02
+    standing_angular: float = 0.
     progress: float = .2
     orientation: float = -2.
     angular_xy: float = -.05

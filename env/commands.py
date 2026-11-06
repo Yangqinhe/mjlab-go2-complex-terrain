@@ -23,6 +23,8 @@ class VelocitySchedule:
         self.applied = torch.zeros_like(self.target)
         self.remaining = torch.zeros(n, dtype=torch.long, device=device)
         self.anchor = torch.zeros(n, dtype=torch.bool, device=device)
+        self.stop_script = torch.zeros_like(self.anchor)
+        self.elapsed = torch.zeros(n, device=device)
 
     def sample(self, ids):
         from domain_randomization.dynamics import uniform
@@ -36,19 +38,33 @@ class VelocitySchedule:
         self.target[ids[stops]] = 0.
         self.target[ids[self.anchor[ids]]] = torch.tensor([.3, 0., 0.], device=device)
         self.remaining[ids] = (draw(4., 8.)/self.task.dt).long()
+        if c.stop_hold_seconds is not None:
+            hold=(draw(*c.stop_hold_seconds)/self.task.dt).long()
+            self.remaining[ids[stops & ~self.anchor[ids]]] = hold[stops & ~self.anchor[ids]]
 
     def reset(self, ids):
         self.anchor[ids] = torch.rand(len(ids), device=self.task.device,
                                       generator=self.generator) < self.config.anchor_fraction
         self.sample(ids)
+        self.elapsed[ids] = 0
+        if self.config.stop_script_fraction:
+            self.stop_script[ids] = ((torch.rand(len(ids),device=self.task.device,generator=self.generator)
+                                     < self.config.stop_script_fraction) & ~self.anchor[ids])
+            self.target[ids[self.stop_script[ids]]] = torch.tensor([.3,0.,0.],device=self.task.device)
+            self.remaining[ids[self.stop_script[ids]]] = 1000000
         # 保持基线的初始向前步态，再平滑进入随机指令；停车目标仍有专门概率质量。
         self.applied[ids] = torch.tensor([.3, 0., 0.], device=self.task.device)
 
     def step(self):
+        self.elapsed += self.task.dt
         self.remaining -= 1
         ids = (self.remaining <= 0).nonzero(as_tuple=False).flatten()
         if len(ids):
             self.sample(ids)
+        if self.config.stop_script_fraction:
+            self.target[self.stop_script] = 0.
+            walking=self.stop_script & (self.elapsed < 6.)
+            self.target[walking,0] = .3
         limit = torch.tensor([self.config.acceleration, self.config.acceleration,
                               self.config.yaw_acceleration], device=self.task.device)*self.task.dt
         self.applied += (self.target-self.applied).clamp(-limit, limit)

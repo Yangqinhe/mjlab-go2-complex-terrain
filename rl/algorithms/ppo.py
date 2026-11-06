@@ -136,16 +136,20 @@ class PPO:
         return metrics
 
     @torch.no_grad()
-    def sample_batch(self, states, critic_states, deterministic=False):
+    def sample_batch(self, states, critic_states, deterministic=False, std_scale=None):
         """批量GPU采样；旧take_action仍返回NumPy，避免静默改变已有接口。"""
         mu, std = self.actor(states)
+        if std_scale is not None:
+            std = std*std_scale
         action = mu if deterministic else Normal(mu, std).sample()
-        return action, {
+        sample = {
             'states': states.detach().clone(), 'critic_states': critic_states.detach().clone(),
             'actions': action, 'values': self.critic(critic_states).squeeze(-1),
             'log_probs': Normal(mu, std).log_prob(action).sum(-1),
             'means': mu, 'stds': std,
         }
+        if std_scale is not None:sample['std_scale']=std_scale.detach().clone()
+        return action,sample
 
     @torch.no_grad()
     def store_batch(self, sample, reward, done, terminated, next_critic):
@@ -160,7 +164,9 @@ class PPO:
         total = torch.zeros((), device=self.device)
         for start in range(0, len(data['states']), 8192):
             end = start+8192
-            distribution = Normal(*self.actor(data['states'][start:end]))
+            mean,std=self.actor(data['states'][start:end])
+            if 'std_scale' in data:std=std*data['std_scale'][start:end]
+            distribution = Normal(mean,std)
             old = Normal(data['means'][start:end], data['stds'][start:end])
             total += kl_divergence(old, distribution).sum()
         return total/len(data['states'])
@@ -184,7 +190,9 @@ class PPO:
                 if not stop_actor and steps % self.config.kl_interval == 0:
                     stop_actor = self.batch_kl(data).item() > self.target_kl*self.config.kl_stop_multiplier
                 if not stop_actor:
-                    distribution = Normal(*self.actor(data['states'][ids]))
+                    mean,std=self.actor(data['states'][ids])
+                    if 'std_scale' in data:std=std*data['std_scale'][ids]
+                    distribution = Normal(mean,std)
                     ratio = (distribution.log_prob(data['actions'][ids]).sum(-1)
                              -data['log_probs'][ids]).exp()
                     surrogate = ratio*advantage[ids]
@@ -194,6 +202,12 @@ class PPO:
                     velocity_loss = F.mse_loss(2*self.actor.velocity(data['states'][ids]),
                                                2*data['critic_states'][ids, 45:48])
                     actor_loss = policy_loss+self.config.velocity_coef*velocity_loss
+                    anchor_loss = policy_loss.new_zeros(())
+                    if 'anchor_mu' in data and self.config.anchor_coef:
+                        weight=data['anchor_weight'][ids]
+                        residual=(distribution.mean-data['anchor_mu'][ids]).square().mean(-1)
+                        anchor_loss=(residual*weight).sum()/weight.sum().clamp(min=1)
+                        actor_loss += self.config.anchor_coef*anchor_loss
                     if not torch.isfinite(actor_loss):
                         raise RuntimeError('Non-finite actor loss')
                     self.actor_optimizer.zero_grad()
@@ -202,6 +216,7 @@ class PPO:
                     self.actor_optimizer.step()
                     totals[0] += policy_loss.detach()
                     totals[1] += velocity_loss.detach()
+                    totals[3] += anchor_loss.detach()
                     steps += 1
                 critic_loss = F.mse_loss(self.critic(data['critic_states'][ids]).squeeze(-1),
                                          returns[ids])
@@ -228,5 +243,7 @@ class PPO:
                            std=self.actor.log_std.clamp(getattr(self.actor, 'log_std_min', -3.), 0).exp().mean().item(),
                            action_clip_fraction=(data['actions'].abs()>1).float().mean().item(),
                            actor_steps=steps, actor_lr=self.actor_optimizer.param_groups[0]['lr'])
+        if 'anchor_mu' in data:
+            metrics['anchor_loss'] = totals[3].item()/max(steps,1)
         self.batch_buffer.clear()
         return metrics

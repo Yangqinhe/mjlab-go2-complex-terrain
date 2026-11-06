@@ -27,11 +27,17 @@ def main():
     parser.add_argument('--visual-steps',type=int,default=10)
     parser.add_argument('--burn-in',type=int,default=2)
     parser.add_argument('--seed',type=int,default=82200)
+    parser.add_argument('--visual-init',help='仅初始化学生视觉，参考仍使用原始来源视觉')
+    parser.add_argument('--latent-coef',type=float,default=.1)
     args=parser.parse_args()
     if args.visual_steps<=args.burn_in:parser.error('visual-steps必须大于burn-in')
     torch.set_num_threads(1);torch.manual_seed(args.seed)
     student,original,saved=load_policy(args.checkpoint)
     reference=copy.deepcopy(student).requires_grad_(False)
+    if args.visual_init:
+        phi=torch.load(args.visual_init,map_location='cpu',weights_only=False)
+        student.visual_encoder.load_state_dict({k.removeprefix('visual_encoder.'):v
+            for k,v in phi['actor'].items() if k.startswith('visual_encoder.')})
     student.requires_grad_(False);student.visual_encoder.requires_grad_(True)
     optimizer=torch.optim.Adam(student.visual_encoder.parameters(),lr=2e-5)
     config=d435i_scene_config(original);config.num_envs=args.num_envs
@@ -44,6 +50,7 @@ def main():
                   source_sha256=hashlib.sha256(Path(args.checkpoint).read_bytes()).hexdigest(),
                   purpose='20-50deg D435i nominal FOV and wall-scene visual adaptation',
                   ppo_iteration_unchanged=saved['iteration'],updates=0,additional_env_steps=0,
+                  visual_init=args.visual_init,latent_coef=args.latent_coef,
                   trainable='visual_encoder only',reference='same state, old25deg camera, terrain geometry group0')
     save_json(folder/'config.json',dict(env=asdict(config),arguments=vars(args)))
     save_json(folder/'metadata.json',metadata)
@@ -118,7 +125,7 @@ def main():
                     action_losses.append(F.mse_loss(student(states)[0],target))
                     latent_losses.append(F.mse_loss(latent,reference_latent))
             action_loss=torch.stack(action_losses).mean();latent_loss=torch.stack(latent_losses).mean()
-            loss=action_loss+.1*latent_loss
+            loss=action_loss+args.latent_coef*latent_loss
             if not torch.isfinite(loss):raise RuntimeError('Nonfinite visual adaptation loss')
             optimizer.zero_grad();loss.backward()
             torch.nn.utils.clip_grad_norm_(student.visual_encoder.parameters(),1.);optimizer.step()

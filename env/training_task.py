@@ -95,8 +95,10 @@ class Go2Task:
                           command*torch.tensor([2., 2., .25], device=self.device),
                           r.joint_pos-r.default_joint_pos, r.joint_vel*.05,
                           self.previous_action], -1).clamp(-5, 5)
-
-    def inputs(self, visual_latent=None):
+# self.robot.data：机器人在仿真环境中的状态数据。
+# root_link_pos_w：机器人根链接（通常是机身）的世界坐标位置。
+# root_link_quat_w：机器人根链接在世界坐标系下的四元数姿态。
+    def inputs(self, visual_latent=None): #task.inputs()在训练循环中被调用，返回状态和critic输入
         r = self.robot.data
         pos = r.root_link_pos_w
         quat = r.root_link_quat_w
@@ -106,7 +108,7 @@ class Go2Task:
         xy = torch.stack([c*self.scan_xy[:, 0]-s*self.scan_xy[:, 1],
                           s*self.scan_xy[:, 0]+c*self.scan_xy[:, 1]], -1)+pos[:, None, :2]
         # 20cm×4级可累计0.8m；高阶允许±2，避免把高处台阶统一截成同一高度。
-        clip = self.config.height_scan_clip
+        clip = self.config.height_scan_clip #高度扫描裁剪值
         heights = ((self.ground(xy)-(pos[:, 2:3]-.27))/.5).clamp(-clip, clip)
         feet = self.env.sim.data.geom_xpos[:, self.foot_ids]
         foot_height = feet[:, :, 2]-self.ground(feet[:, :, :2]).clamp(min=0)
@@ -193,7 +195,7 @@ class Go2Task:
         clearance_error = ((clearance-target).square()*moving*(raw_ground > -1)).sum(-1)
         terms = {
             "tracking_xy": w.tracking_xy*torch.exp(-error/self.config.tracking_error_scale),
-            "tracking_yaw": w.tracking_yaw*torch.exp(-(angular[:, 2]-command[:, 2]).square()/.25),
+            "tracking_yaw": w.tracking_yaw*torch.exp(-(angular[:, 2]-command[:, 2]).square()/w.tracking_yaw_scale),
             "progress": w.progress*r.root_link_lin_vel_w[:, 0].clamp(-.5, .5),
             "orientation": w.orientation*r.projected_gravity_b[:, :2].square().sum(-1),
             "angular_xy": w.angular_xy*angular[:, :2].square().sum(-1),
@@ -211,8 +213,9 @@ class Go2Task:
                 terms['progress'] = torch.zeros_like(error)
             else:
                 terms['progress'] *= ~stopping
-            terms['standing'] = stopping*(-5*r.root_link_lin_vel_b[:, :2].square().sum(-1)
-                                          -.02*r.joint_vel.square().mean(-1))
+            terms['standing'] = stopping*(-w.standing_velocity*r.root_link_lin_vel_b[:, :2].square().sum(-1)
+                                          -w.standing_joint_velocity*r.joint_vel.square().mean(-1)
+                                          -w.standing_angular*angular[:,2].square())
         pos = r.root_link_pos_w-self.env.scene.env_origins
         if self.config.route.enabled:
             terms['route_lateral'] = w.route_lateral*pos[:, 1].square()
