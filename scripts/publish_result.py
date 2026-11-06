@@ -39,6 +39,7 @@ def perception_manifest(deployment, metadata):
         reset='Fresh depth duplicated into both frames, hidden zeroed; only reset worlds commit new state',
         geometry_groups=[0], training_capture_counts={key:metadata.get(key) for key in
             ['policy_steps_this_run', 'normal_captures', 'reset_captures', 'depth_capture_calls']},
+        capture_count_scope=metadata.get('capture_count_scope', 'entire source training run'),
         count_note='Reset capture includes initial reset and may query the full batch; actual ray calls can exceed 10 Hz')
 
 
@@ -89,13 +90,17 @@ def main():
     shutil.copyfile(evaluation, delivery/'student_evaluation.json')
     shutil.copyfile(checkpoint.parent.parent/'config.json', delivery/'config.json')
     shutil.copyfile(checkpoint.parent.parent/'deployment.json', delivery/'deployment.json')
-    for name in ['metadata.json', 'terrain_manifest.json', 'randomization.json', 'train.log',
+    for name in ['metadata.json', 'terrain_manifest.json', 'randomization.json',
                  'calibration.json', 'velocity_metrics.csv', 'ppo_source_config.json']:
         path = checkpoint.parent.parent/name
         if path.exists():
             shutil.copyfile(path, delivery/name)
     deployment = json.loads((delivery/'deployment.json').read_text())
     metadata = json.loads((delivery/'metadata.json').read_text())
+    # 中间快照可能早于源运行结束，原始计数必须明确其统计范围。
+    metadata['selected_checkpoint_iteration'] = saved['iteration']
+    metadata['capture_count_scope'] = f"entire source run ending at iteration {metadata.get('iteration', 'unknown')}"
+    save_json(delivery/'metadata.json', metadata)
     save_json(delivery/'perception.json', perception_manifest(deployment, metadata))
     save_json(delivery/'runtime_versions.json', dict(python=platform.python_version(),
         packages={name:version(name) for name in ['torch', 'mjlab', 'mujoco', 'mujoco-warp', 'warp-lang']},
@@ -133,6 +138,11 @@ def main():
         writer = csv.DictWriter(stream, fieldnames=columns)
         writer.writeheader()
         writer.writerows(rows)
+    source_log = checkpoint.parent.parent/'train.log'
+    if source_log.exists():
+        lines = [line for line in source_log.read_text().splitlines()
+                 if int(json.loads(line)['iteration']) <= saved['iteration']]
+        (delivery/'train.log').write_text('\n'.join(lines)+'\n')
     subprocess.run([str(ROOT/'run.sh'), 'python', '-m', 'scripts.plot_training',
                     str(delivery/'training_metrics.csv')], cwd=ROOT, check=True)
     revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
