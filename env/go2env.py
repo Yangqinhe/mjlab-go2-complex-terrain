@@ -18,7 +18,7 @@ from .robot import make_robot_config
 
 def make_env_config(config):
     command = config.command
-    return ManagerBasedRlEnvCfg(
+    cfg = ManagerBasedRlEnvCfg(
         seed=config.seed,
         decimation=config.decimation,
         episode_length_s=config.episode_seconds,
@@ -70,6 +70,13 @@ def make_env_config(config):
         },
         viewer=ViewerConfig(entity_name="robot", body_name="base"),
     )
+
+    if config.randomization.enabled:
+        from domain_randomization.dynamics import reset_dynamics
+        from mjlab.managers.event_manager import EventTermCfg
+        cfg.events['domain_dynamics'] = EventTermCfg(
+            func=reset_dynamics, mode='reset', params={'config': config.randomization})
+    return cfg
 
 
 def create_env(config, device="cuda:0", render_mode=None):

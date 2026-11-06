@@ -10,3 +10,45 @@ def route_command(command, lateral, yaw, config):
     error = torch.atan2(error.sin(), error.cos())
     command[:, 2] = (config.heading_gain*error).clamp(-config.max_yaw_rate, config.max_yaw_rate)
     return command
+
+
+class VelocitySchedule:
+    """缓存每步真实生效的连续速度指令；采样目标与加速度限制分开。"""
+
+    def __init__(self, task):
+        self.task, self.config = task, task.config.command
+        n, device = task.config.num_envs, task.device
+        self.generator = torch.Generator(device=device).manual_seed(task.config.seed+101)
+        self.target = torch.zeros(n, 3, device=device)
+        self.applied = torch.zeros_like(self.target)
+        self.remaining = torch.zeros(n, dtype=torch.long, device=device)
+        self.anchor = torch.zeros(n, dtype=torch.bool, device=device)
+
+    def sample(self, ids):
+        from domain_randomization.dynamics import uniform
+        c, device = self.config, self.task.device
+        def draw(low, high):
+            return uniform((len(ids),), low, high, device, self.generator)
+        self.target[ids, 0] = draw(*c.vx)
+        self.target[ids, 1] = 0.
+        self.target[ids, 2] = draw(*c.wz)
+        stops = draw(0., 1.) < c.stop_fraction
+        self.target[ids[stops]] = 0.
+        self.target[ids[self.anchor[ids]]] = torch.tensor([.3, 0., 0.], device=device)
+        self.remaining[ids] = (draw(4., 8.)/self.task.dt).long()
+
+    def reset(self, ids):
+        self.anchor[ids] = torch.rand(len(ids), device=self.task.device,
+                                      generator=self.generator) < self.config.anchor_fraction
+        self.sample(ids)
+        # 保持基线的初始向前步态，再平滑进入随机指令；停车目标仍有专门概率质量。
+        self.applied[ids] = torch.tensor([.3, 0., 0.], device=self.task.device)
+
+    def step(self):
+        self.remaining -= 1
+        ids = (self.remaining <= 0).nonzero(as_tuple=False).flatten()
+        if len(ids):
+            self.sample(ids)
+        limit = torch.tensor([self.config.acceleration, self.config.acceleration,
+                              self.config.yaw_acceleration], device=self.task.device)*self.task.dt
+        self.applied += (self.target-self.applied).clamp(-limit, limit)

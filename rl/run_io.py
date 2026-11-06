@@ -26,7 +26,8 @@ def deployment_config(task):
                 default_joint_pos=task.robot.data.default_joint_pos[0].cpu().tolist(),
                 camera=asdict(DepthConfig()), proprio_dim=45, history_steps=10,
                 fusion_dim=176, observation_version='perceptive_176_v1',
-                route=asdict(task.config.route),
+                route=asdict(task.config.route), command=asdict(task.config.command),
+                randomization=asdict(task.config.randomization),
                 gait=asdict(task.config.gait),
                 control_dt=task.dt, physics_dt=task.config.physics_dt,
                 action_scale=task.config.action_scale, kp=task.config.kp, kd=task.config.kd,
@@ -47,7 +48,7 @@ def new_run(stage, env_config, train_config):
     (path/'checkpoints').mkdir(parents=True)
     (path/'evaluations').mkdir()
     save_json(path/'config.json', dict(env=asdict(env_config), train=asdict(train_config), stage=stage))
-    save_json(path/'randomization.json', dict(enabled=False))
+    save_json(path/'randomization.json', asdict(env_config.randomization))
     terrain = env_config.terrain
     save_json(path/'terrain_manifest.json', dict(seed=terrain.seed,
         obstacles=terrain.obstacles, length=terrain.length, width=terrain.width,
@@ -110,6 +111,8 @@ def env_from_dict(data):
     data['training_reward'] = TrainingRewardConfig(**data.get('training_reward', {}))
     data['route'] = RouteCommandConfig(**data.get('route', {}))
     data['gait'] = GaitConfig(**data.get('gait', {}))
+    from domain_randomization.config import RandomizationConfig
+    data['randomization'] = RandomizationConfig(**data.get('randomization', {}))
     return EnvConfig(**data)
 
 

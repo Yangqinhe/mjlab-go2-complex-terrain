@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 
 from terrains.config import TerrainConfig
+from domain_randomization.config import RandomizationConfig
 
 
 @dataclass
@@ -12,6 +13,12 @@ class VelocityCommandConfig:
     vy: tuple[float, float] = (0.0, 0.0)
     wz: tuple[float, float] = (0.0, 0.0)
     resample_seconds: float = 3.0
+    mode: str = "legacy"
+    yaw_limit: float = .5
+    acceleration: float = .2
+    yaw_acceleration: float = .5
+    stop_fraction: float = .15
+    anchor_fraction: float = .2
 
 
 @dataclass
@@ -92,4 +99,5 @@ class EnvConfig:
     route: RouteCommandConfig = field(default_factory=RouteCommandConfig)
     gait: GaitConfig = field(default_factory=GaitConfig)
     terrain: TerrainConfig = field(default_factory=TerrainConfig)
+    randomization: RandomizationConfig = field(default_factory=RandomizationConfig)
     training_reward: TrainingRewardConfig = field(default_factory=TrainingRewardConfig)

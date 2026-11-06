@@ -55,6 +55,8 @@ def main():
     parser.add_argument('--terrain-support-reward', type=float, help='复杂地形落足重叠系数，0保留原奖励')
     parser.add_argument('--terrain-support-downstairs-only', action=argparse.BooleanOptionalAction,
                         default=None, help='将落足重叠限制在下楼梯及其前后0.2m')
+    parser.add_argument('--env-config', help='完整环境JSON，显式替换恢复环境配置')
+    parser.add_argument('--reset-optimizer', action='store_true', help='新任务重置Adam动量，保留策略和critic权重')
     parser.add_argument('--training-levels', type=int, nargs='+')
     args = parser.parse_args()
     if args.proprio_only and args.stage != 'student_ppo':
@@ -69,6 +71,10 @@ def main():
         config = env_from_dict(saved['env_config'])
         config.num_envs = args.num_envs
         training = TrainConfig(**saved['train_config'])
+    if args.env_config:
+        from pathlib import Path
+        config = env_from_dict(json.loads(Path(args.env_config).read_text()))
+        config.num_envs = args.num_envs
     if args.seed is not None:
         config.seed = args.seed
     if args.terrain_seed is not None:
@@ -127,8 +133,9 @@ def main():
         if saved['stage'] == args.stage:
             agent.actor_optimizer.load_state_dict(saved['actor_optimizer'])
             agent.critic_optimizer.load_state_dict(saved['critic_optimizer'])
-            if training.proprio_only != saved['train_config'].get('proprio_only', False):
+            if args.reset_optimizer or training.proprio_only != saved['train_config'].get('proprio_only', False):
                 agent.actor_optimizer.state.clear()
+                agent.critic_optimizer.state.clear()
             start_iteration = saved['iteration']
             total_steps = saved.get('total_steps', saved['iteration']*saved['train_config']['horizon']
                                     *saved['env_config']['num_envs'])
@@ -170,6 +177,11 @@ def main():
     deployment = deployment_config(task)
     deployment['proprio_only'] = training.proprio_only
     save_json(folder/'deployment.json', deployment)
+    if config.randomization.enabled:
+        from dataclasses import asdict
+        save_json(folder/'randomization_samples_initial.json', dict(
+            columns=['payload_kg', 'payload_x', 'payload_y', 'payload_z', 'mass_scale', 'friction', 'kp_scale', 'kd_scale'],
+            samples=task.env.dr_samples.cpu().tolist(), config=asdict(config.randomization)))
     visual = None
     if mode == 'student' and not training.proprio_only:
         from env.perception.runtime import VisualRuntime
@@ -230,6 +242,10 @@ def main():
                        elapsed_seconds=time.monotonic()-begin, **metrics,
                        **{f'reward_{key}':value.item()/training.horizon
                           for key,value in term_sums.items()})
+            if task.schedule is not None:
+                row.update(command_vx=info['command'][:, 0].mean().item(),
+                           command_yaw=info['command'][:, 2].mean().item(),
+                           yaw_rmse=info['yaw_rmse'].mean().item())
             append_csv(folder/'metrics.csv', row)
             with (folder/'train.log').open('a') as stream:
                 stream.write(json.dumps(row)+'\n')

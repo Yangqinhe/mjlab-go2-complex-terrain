@@ -49,13 +49,33 @@ class DepthSensor:
             )
         self.capture_count = 0
         self.raw_depth = None
+        self.dr = task.config.randomization
+        if self.dr.enabled:
+            self.generator = torch.Generator(device=device).manual_seed(self.dr.seed+2)
+            self.mounts = self.mount.expand(n, 3).clone()
+            self.rotations = self.rotation.expand(n, 3, 3).clone()
+
+    def reset_mount(self, ids):
+        if not self.dr.enabled:
+            return
+        from domain_randomization.dynamics import uniform
+        c, device = self.dr, self.task.device
+        shift = uniform((len(ids), 3), -c.camera_position, c.camera_position, device, self.generator)
+        axis = uniform((len(ids), 3), -c.camera_angle, c.camera_angle, device, self.generator)
+        clean = self.task.env.dr_nominal[ids]
+        shift[clean], axis[clean] = 0., 0.
+        angle = axis.norm(dim=-1, keepdim=True)
+        quat = torch.cat([torch.cos(angle/2), axis*torch.sin(angle/2)/angle.clamp(min=1e-8)], -1)
+        self.mounts[ids] = self.mount+shift
+        self.rotations[ids] = matrix_from_quat(quat)@self.rotation
 
     @torch.no_grad()
     def capture(self):
         r = self.task.robot.data
         body_rotation = matrix_from_quat(r.root_link_quat_w)
-        rotation = body_rotation@self.rotation
-        origin = r.root_link_pos_w+(body_rotation@self.mount[:, None]).squeeze(-1)
+        rotation = body_rotation@(self.rotations if self.dr.enabled else self.rotation)
+        mount = self.mounts if self.dr.enabled else self.mount
+        origin = r.root_link_pos_w+(body_rotation@mount[..., None]).squeeze(-1)
         self.pnt.copy_(origin[:, None].expand_as(self.pnt))
         self.vec.copy_(torch.einsum('bij,pj->bpi', rotation, self.directions))
         with wp.ScopedDevice(self.task.device):
@@ -68,4 +88,13 @@ class DepthSensor:
         depth = torch.where(self.dist >= 0, depth, self.config.far)
         self.raw_depth = depth.view(-1, self.config.height, self.config.width)
         self.capture_count += 1
-        return normalize_depth(self.raw_depth, self.config)
+        if not self.dr.enabled:
+            return normalize_depth(self.raw_depth, self.config)
+        valid = (self.dist >= 0).view_as(self.raw_depth) & (self.raw_depth > 0)
+        noise = torch.randn(depth.shape, device=depth.device, generator=self.generator).view_as(self.raw_depth)
+        clean = self.task.env.dr_nominal[:, None, None]
+        measured = self.raw_depth+noise.clamp(-3, 3)*(self.dr.depth_noise+self.dr.depth_noise*self.raw_depth.square())
+        missing = torch.rand(self.raw_depth.shape, device=depth.device, generator=self.generator) < self.dr.depth_dropout
+        measured = torch.where(valid & ~missing, measured, self.config.far)
+        measured = torch.where(clean, self.raw_depth, measured)
+        return normalize_depth(measured, self.config)

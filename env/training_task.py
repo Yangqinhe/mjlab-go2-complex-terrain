@@ -9,7 +9,7 @@ from mjlab.sensor import ContactMatch, ContactSensorCfg
 from mjlab.utils.nan_guard import NanGuard
 
 from env.go2env import make_env_config
-from env.commands import route_command
+from env.commands import route_command, VelocitySchedule
 from env.gait import GaitTracker, flat_mask
 from terrains.height_query import HeightQuery
 
@@ -63,10 +63,17 @@ class Go2Task:
         self.dt = config.physics_dt*config.decimation
         self.numerical_failures = 0
         self.gait = GaitTracker(config.gait, config.num_envs, device, self.dt)
+        self.schedule = VelocitySchedule(self) if config.command.mode != 'legacy' else None
+        self.randomization = None
+        if config.randomization.enabled:
+            from domain_randomization.runtime import RandomizationRuntime
+            self.randomization = RandomizationRuntime(self)
+        self.yaw_error_sum = torch.zeros_like(self.error_sum)
         self.reset()
 
     def command(self):
-        command = self.env.command_manager.get_command("velocity")
+        command = (self.schedule.applied if self.schedule is not None else
+                   self.env.command_manager.get_command("velocity"))
         if self.config.route.enabled:
             r = self.robot.data
             q = r.root_link_quat_w
@@ -77,6 +84,11 @@ class Go2Task:
         return command
 
     def proprio(self):
+        if self.randomization is not None:
+            return self.randomization.observation
+        return self.clean_proprio()
+
+    def clean_proprio(self):
         r = self.robot.data
         command = self.command()
         return torch.cat([r.root_link_ang_vel_b*.25, r.projected_gravity_b,
@@ -117,6 +129,12 @@ class Go2Task:
             terrain.update_env_origins(ids, move_up, ~move_up)
         self.env.reset(env_ids=ids)
         self.previous_action[ids] = 0
+        self.yaw_error_sum[ids] = 0
+        if self.schedule is not None:
+            self.schedule.reset(ids)
+        if self.randomization is not None:
+            self.randomization.reset(ids)
+            self.randomization.update(self.clean_proprio(), ids)
         self.history[ids] = self.proprio()[ids, None].expand(-1, 10, -1)
         self.previous_foot[ids] = self.env.sim.data.geom_xpos[ids][:, self.foot_ids]
         self.return_sum[ids], self.error_sum[ids], self.visited[ids] = 0, 0, False
@@ -125,6 +143,10 @@ class Go2Task:
 
     def step(self, action):
         executed = action.clamp(-1, 1)
+        if self.randomization is not None:
+            executed = self.randomization.action(executed)
+        # command在整个transition内保持相同；终止状态入rollout后才为下一步换指令。
+        command = self.command().clone()
         action_rate = (executed-self.previous_action).square().sum(-1)
         self.env.control_effort.zero_()
         self.env.step(executed)
@@ -139,8 +161,9 @@ class Go2Task:
             self.env.reset(env_ids=ids)
             self.env.episode_length_buf[ids] = lengths
         self.previous_action.copy_(executed)
-        self.history = torch.cat([self.history[:, 1:], self.proprio()[:, None]], 1)
         r = self.robot.data
+        if self.schedule is None:
+            command = self.command()
         feet = self.env.sim.data.geom_xpos[:, self.foot_ids]
         contact = self.env.scene["feet"].data.force[:, self.foot_order, 2].abs()>1
         raw_ground = self.ground(feet[:, :, :2])
@@ -154,7 +177,6 @@ class Go2Task:
         lever = feet-self.robot.data.body_link_pos_w[:, self.calf_ids]
         foot_velocity = foot_velocity+torch.cross(omega, lever, dim=-1)
         slip = (contact*foot_velocity[:, :, :2].square().sum(-1)).mean(-1)
-        command = self.command()
         error = (r.root_link_lin_vel_b[:, :2]-command[:, :2]).square().sum(-1)
         angular = r.root_link_ang_vel_b
         limits = r.soft_joint_pos_limits
@@ -182,6 +204,15 @@ class Go2Task:
             "slip": w.slip*slip, "collision": w.collision*collision.float(),
             "foot_clearance": w.foot_clearance*clearance_error,
         }
+        free = self.config.command.mode == 'free'
+        stopping = command.abs().amax(-1) < .03
+        if self.schedule is not None:
+            if free:
+                terms['progress'] = torch.zeros_like(error)
+            else:
+                terms['progress'] *= ~stopping
+            terms['standing'] = stopping*(-5*r.root_link_lin_vel_b[:, :2].square().sum(-1)
+                                          -.02*r.joint_vel.square().mean(-1))
         pos = r.root_link_pos_w-self.env.scene.env_origins
         if self.config.route.enabled:
             terms['route_lateral'] = w.route_lateral*pos[:, 1].square()
@@ -197,14 +228,28 @@ class Go2Task:
                                    r.root_link_lin_vel_b[:, 2], height,
                                    active=(self.env.episode_length_buf*self.dt > .5) & ~numerical,
                                    support_mask=support_mask))
+        if self.schedule is not None:
+            for name in ('gait_touchdown', 'gait_short_swing', 'gait_support'):
+                if name in terms:
+                    terms[name] *= ~stopping
         regions = self.config.terrain.regions()
         for i, (start, end) in enumerate(regions.values()):
             self.visited[:, i] |= (local_x >= start) & (local_x <= end)
         fall = numerical | (r.projected_gravity_b[:, 2] > -math.cos(self.config.max_tilt_radians)) | (height<w.minimum_height)
         outside = (pos[:, 1].abs()>self.config.terrain.width/2-.2) | (local_x<0)
         success = (local_x > self.config.terrain.length-.5) & self.visited.all(-1) & ~fall
+        if free:
+            outside |= local_x > self.config.terrain.length-.2
+            success = torch.zeros_like(fall)
         terminated = fall | outside | success
         truncated = self.env.episode_length_buf >= self.env.max_episode_length
+        self.yaw_error_sum += (angular[:, 2]-command[:, 2]).square()
+        if free:
+            # 生存到预算末尾与跟踪准确分开；不能把所有未摔倒都写成成功。
+            vx_rmse = ((self.vx_error_sum+(r.root_link_lin_vel_b[:, 0]-command[:, 0]).square())
+                       /self.env.episode_length_buf.clamp(min=1)).sqrt()
+            yaw_rmse = (self.yaw_error_sum/self.env.episode_length_buf.clamp(min=1)).sqrt()
+            success = truncated & ~fall & ~outside & (vx_rmse <= .1) & (yaw_rmse <= .15)
         for value in terms.values():
             value[numerical] = 0
         reward = self.dt*sum(terms.values())+w.success*success.float()+w.failure*(fall | outside).float()
@@ -216,6 +261,13 @@ class Go2Task:
                     error=error, episode_return=self.return_sum,
                     vx_rmse=(self.vx_error_sum/self.env.episode_length_buf.clamp(min=1)).sqrt(),
                     rmse=(self.error_sum/self.env.episode_length_buf.clamp(min=1)).sqrt())
+        info['command'] = command
+        info['yaw_rmse'] = (self.yaw_error_sum/self.env.episode_length_buf.clamp(min=1)).sqrt()
+        if self.schedule is not None:
+            self.schedule.step()
+        if self.randomization is not None:
+            self.randomization.update(self.clean_proprio())
+        self.history = torch.cat([self.history[:, 1:], self.proprio()[:, None]], 1)
         self.previous_foot.copy_(feet)
         return reward, terminated, truncated, info
 
