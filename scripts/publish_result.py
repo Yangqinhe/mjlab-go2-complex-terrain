@@ -3,6 +3,9 @@
 import argparse
 import csv
 import hashlib
+from importlib.metadata import version
+import math
+import platform
 import json
 from pathlib import Path
 import shutil
@@ -15,6 +18,28 @@ import torch
 from rl.run_io import ROOT, save_json
 from rl.config import STAIR_STAGES
 from env.gait import gait_passed
+
+
+
+def perception_manifest(deployment, metadata):
+    """导出与DepthSensor一致的针孔内外参，单独记录reset带来的额外查询。"""
+    camera = deployment['camera']
+    fy = camera['height']/(2*math.tan(math.radians(camera['fovy_degrees'])/2))
+    theta = math.radians(camera['pitch_down_degrees'])
+    return dict(camera=camera, intrinsics=dict(fx=fy, fy=fy,
+        cx=(camera['width']-1)/2, cy=(camera['height']-1)/2),
+        rotation_camera_to_body=[[0, math.sin(theta), -math.cos(theta)],
+                                 [-1, 0, 0], [0, math.cos(theta), math.sin(theta)]],
+        translation_camera_to_body_m=camera['position'],
+        axes='body: +X forward, +Y left, +Z up; camera: +X right, +Y up, -Z forward; image: u right, v down',
+        depth_definition='optical-axis (-camera Z) depth in meters, not Euclidean ray range',
+        preprocessing='NaN/+Inf/-Inf and missing rays become far; clip to near/far, scale to [-0.5,0.5]',
+        normalized_dtype='float16', pair_order=['previous', 'current'],
+        nominal_hz=1/(camera['update_steps']*deployment['control_dt']),
+        reset='Fresh depth duplicated into both frames, hidden zeroed; only reset worlds commit new state',
+        geometry_groups=[0], training_capture_counts={key:metadata.get(key) for key in
+            ['policy_steps_this_run', 'normal_captures', 'reset_captures', 'depth_capture_calls']},
+        count_note='Reset capture includes initial reset and may query the full batch; actual ray calls can exceed 10 Hz')
 
 
 def main():
@@ -64,11 +89,17 @@ def main():
     shutil.copyfile(evaluation, delivery/'student_evaluation.json')
     shutil.copyfile(checkpoint.parent.parent/'config.json', delivery/'config.json')
     shutil.copyfile(checkpoint.parent.parent/'deployment.json', delivery/'deployment.json')
-    for name in ['metadata.json', 'terrain_manifest.json', 'randomization.json',
+    for name in ['metadata.json', 'terrain_manifest.json', 'randomization.json', 'train.log',
                  'calibration.json', 'velocity_metrics.csv', 'ppo_source_config.json']:
         path = checkpoint.parent.parent/name
         if path.exists():
             shutil.copyfile(path, delivery/name)
+    deployment = json.loads((delivery/'deployment.json').read_text())
+    metadata = json.loads((delivery/'metadata.json').read_text())
+    save_json(delivery/'perception.json', perception_manifest(deployment, metadata))
+    save_json(delivery/'runtime_versions.json', dict(python=platform.python_version(),
+        packages={name:version(name) for name in ['torch', 'mjlab', 'mujoco', 'mujoco-warp', 'warp-lang']},
+        torch_cuda_build=torch.version.cuda))
     if state.get('teacher'):
         shutil.copyfile(state['teacher'], delivery/'teacher_final.pt')
     # 从已通过评估的layout0案例单独重放，视频只记录一个回合，避免其他世界reset穿插。
