@@ -21,11 +21,11 @@ def save_json(path, value):
 
 
 def deployment_config(task):
-    from env.perception.config import DepthConfig
     return dict(joint_order=list(task.robot.joint_names),
                 default_joint_pos=task.robot.data.default_joint_pos[0].cpu().tolist(),
-                camera=asdict(DepthConfig()), proprio_dim=45, history_steps=10,
-                fusion_dim=176, observation_version='perceptive_176_v1',
+                camera=asdict(task.config.camera), proprio_dim=45, history_steps=10,
+                fusion_dim=176, depth_geometry_groups=([0,4] if task.config.terrain.surroundings else [0]),
+                observation_version='perceptive_176_v1',
                 route=asdict(task.config.route), command=asdict(task.config.command),
                 randomization=asdict(task.config.randomization),
                 gait=asdict(task.config.gait),
@@ -53,6 +53,7 @@ def new_run(stage, env_config, train_config):
     save_json(path/'terrain_manifest.json', dict(seed=terrain.seed,
         obstacles=terrain.obstacles, length=terrain.length, width=terrain.width,
         regions=terrain.regions(), layouts=terrain.layouts,
+        surroundings=terrain.surroundings, corridor_width=terrain.corridor_width,
         stair_heights=[terrain.step_height(i/max(terrain.levels-1, 1))
                        for i in range(terrain.levels)]))
     return path
@@ -113,6 +114,8 @@ def env_from_dict(data):
     data['gait'] = GaitConfig(**data.get('gait', {}))
     from domain_randomization.config import RandomizationConfig
     data['randomization'] = RandomizationConfig(**data.get('randomization', {}))
+    from env.perception.config import DepthConfig
+    data['camera'] = DepthConfig(**data.get('camera', {}))
     return EnvConfig(**data)
 
 

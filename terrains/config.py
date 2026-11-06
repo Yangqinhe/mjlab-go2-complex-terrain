@@ -25,6 +25,8 @@ class TerrainConfig:
     rubble_height_min: float = 0.01
     rubble_height_max: float = 0.04
     spawn_x: float = 1.0
+    surroundings: bool = False
+    corridor_width: tuple[float, float] = (1.2, 2.4)
 
     @property
     def length(self):

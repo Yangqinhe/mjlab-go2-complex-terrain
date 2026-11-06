@@ -23,17 +23,22 @@ def main():
     parser.add_argument('--num-envs', type=int, default=1024)
     parser.add_argument('--batches', type=int, default=4)
     parser.add_argument('--iterations', type=int, default=300)
+    parser.add_argument('--d435i-scenes', action='store_true', help='先适应20-50度及侧墙视觉，再续训控制')
     args = parser.parse_args()
     torch.set_num_threads(1)
     saved = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
     original = env_from_dict(saved['env_config'])
+    if args.d435i_scenes:
+        from domain_randomization.config import d435i_scene_config
+        original = d435i_scene_config(original)
     stamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
     folder = ROOT/'outputs'/f'{stamp}_domain_randomization_pipeline'
     folder.mkdir()
     source_hash = hashlib.sha256(Path(args.checkpoint).read_bytes()).hexdigest()
     status = dict(status='running', baseline=args.checkpoint, baseline_sha256=source_hash,
                   requested=dict(vx=[-.3,.3],vy=[0.,0.],wz=[-.5,.5],stop_test='0.3 -> 0'),
-                  folder=str(folder), runs=[], evaluations=[], current_checkpoint=args.checkpoint)
+                  folder=str(folder), runs=[], evaluations=[], current_checkpoint=args.checkpoint,
+                  d435i_scenes=args.d435i_scenes)
     save_json(folder/'status.json',status)
     print(f'DOMAIN_PIPELINE={folder}',flush=True)
 
@@ -75,10 +80,24 @@ def main():
     config.terrain.obstacles=False;config.terrain.levels=2;config.terrain.layouts=1
     config.terrain.width=20.;config.terrain.flat_length=20.;config.terrain.spawn_x=10.
     config.randomization.enabled=True;config.randomization.payload_max=.5
+    if args.d435i_scenes:
+        # 自由速度先用宽阔场地，避免把无法执行的朝墙速度命令当作策略失败。
+        config.terrain.corridor_width=(12.,16.)
     save_json(folder/'initial_free_config.json',asdict(config))
     checkpoint=args.checkpoint
     best=None;best_score=-1.
     try:
+        if args.d435i_scenes:
+            status.update(stage='d435i_visual_adaptation',log=str(folder/'d435i_visual_adaptation.log'))
+            save_json(folder/'status.json',status)
+            text=run(['scripts.adapt_camera_scene','--checkpoint',checkpoint,
+                      '--num-envs','128','--iterations','250','--seed','82200'],
+                     'd435i_visual_adaptation.log')
+            adaptation=Path(next(line.split('=',1)[1] for line in text.splitlines()
+                                 if line.startswith('VISUAL_ADAPTATION_FINISHED=')))
+            checkpoint=str(adaptation/'checkpoints/final.pt')
+            status.update(visual_adaptation=str(adaptation),current_checkpoint=checkpoint)
+            save_json(folder/'status.json',status)
         for batch in range(args.batches):
             config.randomization.seed=81110+batch;config.seed=81110+batch
             checkpoint=train(config,checkpoint,args.iterations,81110+batch,f'free_batch{batch+1}')

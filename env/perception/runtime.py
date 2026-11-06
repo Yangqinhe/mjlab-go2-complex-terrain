@@ -6,16 +6,16 @@ from .depth_sensor import DepthSensor
 
 
 class VisualRuntime:
-    def __init__(self, task, encoder):
+    def __init__(self, task, encoder, sensor=None):
         self.task, self.encoder = task, encoder
-        self.sensor = DepthSensor(task)
+        self.sensor = sensor or DepthSensor(task)
         self.steps, self.normal_captures, self.reset_captures = 0, 0, 0
         n, device = task.config.num_envs, task.device
         self.pair = torch.zeros(n, 2, 48, 64, device=device, dtype=torch.float16)
         self.hidden = torch.zeros(n, 128, device=device)
         self.hidden_before = torch.zeros_like(self.hidden)
         self.latent = torch.zeros(n, 64, device=device)
-        self.dr = task.config.randomization
+        self.dr = self.sensor.dr
         if self.dr.enabled:
             self.generator = torch.Generator(device=device).manual_seed(self.dr.seed+3)
             self.pending = torch.zeros(n, 48, 64, device=device, dtype=torch.float16)

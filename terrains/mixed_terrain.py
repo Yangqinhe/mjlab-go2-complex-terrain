@@ -12,6 +12,7 @@ from .config import TerrainConfig
 from .flat import add_box
 from .rubble import add_rubble
 from .stairs import add_stairs
+from .surroundings import add_surroundings
 
 
 @dataclass(kw_only=True)
@@ -33,6 +34,8 @@ class MixedTerrainCfg(SubTerrainCfg):
         if config.obstacles:
             geometries += add_stairs(body, config, difficulty, prefix)
             geometries += add_rubble(body, config, difficulty, rng, prefix)
+        if config.surroundings:
+            geometries += add_surroundings(body, config, rng, prefix, self.layout_id)
         return TerrainOutput(
             origin=np.array([config.spawn_x, config.width / 2, 0.0]),
             geometries=geometries,

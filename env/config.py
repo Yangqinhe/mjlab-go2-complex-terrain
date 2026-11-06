@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 
 from terrains.config import TerrainConfig
 from domain_randomization.config import RandomizationConfig
+from env.perception.config import DepthConfig
 
 
 @dataclass
@@ -99,5 +100,6 @@ class EnvConfig:
     route: RouteCommandConfig = field(default_factory=RouteCommandConfig)
     gait: GaitConfig = field(default_factory=GaitConfig)
     terrain: TerrainConfig = field(default_factory=TerrainConfig)
+    camera: DepthConfig = field(default_factory=DepthConfig)
     randomization: RandomizationConfig = field(default_factory=RandomizationConfig)
     training_reward: TrainingRewardConfig = field(default_factory=TrainingRewardConfig)

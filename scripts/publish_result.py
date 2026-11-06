@@ -25,8 +25,9 @@ def perception_manifest(deployment, metadata):
     """导出与DepthSensor一致的针孔内外参，单独记录reset带来的额外查询。"""
     camera = deployment['camera']
     fy = camera['height']/(2*math.tan(math.radians(camera['fovy_degrees'])/2))
+    fx = camera['width']/(2*math.tan(math.radians(camera['fovx_degrees'])/2)) if camera.get('fovx_degrees') else fy
     theta = math.radians(camera['pitch_down_degrees'])
-    return dict(camera=camera, intrinsics=dict(fx=fy, fy=fy,
+    return dict(camera=camera, intrinsics=dict(fx=fx, fy=fy,
         cx=(camera['width']-1)/2, cy=(camera['height']-1)/2),
         rotation_camera_to_body=[[0, math.sin(theta), -math.cos(theta)],
                                  [-1, 0, 0], [0, math.cos(theta), math.sin(theta)]],
@@ -37,7 +38,7 @@ def perception_manifest(deployment, metadata):
         normalized_dtype='float16', pair_order=['previous', 'current'],
         nominal_hz=1/(camera['update_steps']*deployment['control_dt']),
         reset='Fresh depth duplicated into both frames, hidden zeroed; only reset worlds commit new state',
-        geometry_groups=[0], training_capture_counts={key:metadata.get(key) for key in
+        geometry_groups=deployment.get('depth_geometry_groups',[0]), training_capture_counts={key:metadata.get(key) for key in
             ['policy_steps_this_run', 'normal_captures', 'reset_captures', 'depth_capture_calls']},
         capture_count_scope=metadata.get('capture_count_scope', 'entire source training run'),
         count_note='Reset capture includes initial reset and may query the full batch; actual ray calls can exceed 10 Hz')
@@ -100,6 +101,13 @@ def main():
         if path.exists():
             shutil.copyfile(path, delivery/name)
     deployment = json.loads((delivery/'deployment.json').read_text())
+    # 相机/场景适应的中间文件可能沿用来源deployment；以该权重实际env_config导出。
+    deployment['camera'] = saved['env_config'].get('camera', deployment['camera'])
+    deployment['depth_geometry_groups'] = [0,4] if saved['env_config']['terrain'].get('surroundings',False) else [0]
+    for field in ('command','route','randomization'):
+        if field in saved['env_config']:
+            deployment[field] = saved['env_config'][field]
+    save_json(delivery/'deployment.json', deployment)
     metadata = json.loads((delivery/'metadata.json').read_text())
     # 中间快照可能早于源运行结束，原始计数必须明确其统计范围。
     metadata['selected_checkpoint_iteration'] = saved['iteration']

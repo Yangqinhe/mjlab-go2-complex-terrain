@@ -12,7 +12,7 @@ class HeightQuery:
             prefix = f"course_{round(level/(config.levels-1)*1000):04d}"
             for layout in range(config.layouts):
                 tag = prefix + (f"_v{layout}" if config.layouts > 1 else "") + "_"
-                boxes = [i for i in range(model.ngeom) if model.geom(i).name.startswith(tag)]
+                boxes = [i for i in range(model.ngeom) if model.geom(i).name.startswith(tag) and model.geom_group[i] == 0]
                 positions, sizes = model.geom_pos[boxes], model.geom_size[boxes]
                 assert np.allclose(model.geom_quat[boxes], [1, 0, 0, 0]), "Only axis-aligned boxes"
                 table.append(np.c_[positions[:, :2]-sizes[:, :2],

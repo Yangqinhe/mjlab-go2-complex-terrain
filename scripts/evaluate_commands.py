@@ -93,6 +93,8 @@ def evaluate(checkpoint, env_config, seeds=(50100, 50101, 50102), seconds=20., d
                           and max_flight[i].item() <= .060001 and flight_fraction <= .01
                           and (stopped is None or stopped['passed']))
                 records.append(dict(seed=seed,scenario=kind,vx=vx,wz=wz,passed=passed,
+                    terrain_layout=int(task.env.scene.terrain.terrain_types[i]),
+                    camera_pitch=(visual.sensor.pitch_degrees[i].item() if config.randomization.enabled else config.camera.pitch_down_degrees),
                     survived=bool(alive[i]),failure=bool(failed[i]),steady_start_seconds=begin,
                     steady_rmse=rmse,full_rmse=error[active[:,i],i].mean(0).sqrt().cpu().tolist(),
                     max_flight_seconds=max_flight[i].item(),flight_fraction=flight_fraction,

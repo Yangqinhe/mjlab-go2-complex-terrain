@@ -75,7 +75,7 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                     data = mujoco.MjData(model)
                     renderer = mujoco.Renderer(model, height=720, width=1280)
                     option = mujoco.MjvOption()
-                    option.geomgroup[:] = [1, 1, 1, 0, 0, 0]
+                    option.geomgroup[:] = [1, 1, 1, 0, int(config.terrain.surroundings), 0]
                     camera = mujoco.MjvCamera()
                     camera.distance, camera.elevation, camera.azimuth = 2.5, -25, 110
                 next_frame = 0.
