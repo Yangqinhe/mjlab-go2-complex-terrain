@@ -4,7 +4,7 @@
 
 四个新地形的视觉细化与随后25次PPO均已完成，但独立评估仍失败：15cm为14/20完成，多个高度有腾空超限。对照诊断中，教师使用真值地形特征在20cm为4/4完成，而PPO50学生共享控制器接入同一教师特征为0/4，表明两者特征/控制映射不能直接等同。该诊断只用于误差隔离，正式视觉验收始终使用真实深度。
 
-恢复并冻结教师共享控制器后的纯学生视觉细化已完成两地形各50次，随后25次PPO也已完成；六档独立评估进行中，9cm仍有0.06秒腾空超限。另以原较好分支25/50轮actor各50%形成候选，最高20cm选模19/20完成、vx RMSE=0.06970且步态通过，其余高度和未用新seed复核仍待完成。网络保持176维融合与12关节输出，尚未发布最终成功策略。
+恢复并冻结教师共享控制器后的纯学生视觉细化已完成两地形各50次，随后25次PPO也已完成；六档独立评估进行中，9cm仍有0.06秒腾空超限。原较好分支25/50轮actor各50%的平均候选在20cm为19/20且步态通过，但15cm出现0.10秒腾空，已拒绝，未运行新seed复核。当前继续视觉PPO修正，并训练同任务/奖励/超参数的仅本体对照基线。网络保持176维融合与12关节输出，尚未发布最终成功策略。
 
 [视觉容量实测](docs/视觉并行容量实测.md)已完成16/64/256/512/1024/2048六档完整视觉PPO，每档20次更新、51.2秒仿真；2048档整卡采样峰值7734MiB、约18199.7条状态转移/秒，数值异常0。该实测使用候选权重、视觉编码器冻结，不能代替步态验收或蒸馏BPTT容量测试。流水线可用`--student-num-envs`配置学生PPO规模，默认256。
 
@@ -81,6 +81,9 @@ uv sync --frozen
 # 视觉蒸馏前50轮冻结公共网络，150轮后完全由学生控制；建议至少200轮
 ./run.sh python -m scripts.distill_student --teacher <qualified_teacher.pt> --iterations 200
 ./run.sh python -m scripts.train_go2_ppo --stage student_ppo --resume <student.pt> --num-envs 256 --iterations 300
+
+# 同一视觉学生起点额外100次仅本体训练，并保存六档完整对照报告
+./run.sh python -m scripts.train_proprio_baseline --checkpoint <visual_student.pt>
 
 # 确定性评估；--max-steps仅作片段诊断，会标记partial_evaluation
 ./run.sh python -m scripts.evaluate --checkpoint <checkpoint.pt> --seeds 10000 10001 10002 10003 10004
