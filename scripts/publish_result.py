@@ -64,7 +64,8 @@ def main():
     shutil.copyfile(evaluation, delivery/'student_evaluation.json')
     shutil.copyfile(checkpoint.parent.parent/'config.json', delivery/'config.json')
     shutil.copyfile(checkpoint.parent.parent/'deployment.json', delivery/'deployment.json')
-    for name in ['calibration.json', 'velocity_metrics.csv', 'ppo_source_config.json']:
+    for name in ['metadata.json', 'terrain_manifest.json', 'randomization.json',
+                 'calibration.json', 'velocity_metrics.csv', 'ppo_source_config.json']:
         path = checkpoint.parent.parent/name
         if path.exists():
             shutil.copyfile(path, delivery/name)

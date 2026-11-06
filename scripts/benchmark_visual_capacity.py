@@ -85,7 +85,10 @@ def main():
         component_profile(args.checkpoint, args.profile_envs, args.seed, args.terrain_seed, args.profile_output)
         return
     checkpoint = args.checkpoint.resolve()
-    if torch.load(checkpoint, map_location='cpu', weights_only=False)['train_config'].get('proprio_only', False):
+    saved = torch.load(checkpoint, map_location='cpu', weights_only=False)
+    if saved['stage'] != 'student_ppo':
+        raise ValueError('这里只测真实视觉PPO容量')
+    if saved['train_config'].get('proprio_only', False):
         raise ValueError('本体基线不能作为视觉容量验收权重')
     folder = ROOT/'outputs'/f'{datetime.now():%Y%m%d_%H%M%S}_visual_capacity'
     folder.mkdir()
@@ -119,8 +122,8 @@ def main():
                     '--stage', 'student_ppo', '--resume', str(checkpoint), '--num-envs', str(num_envs),
                     '--iterations', str(args.iterations), '--horizon', str(args.horizon),
                     '--batch-size', str(batch_size), '--seed', str(args.seed), '--terrain-seed', str(args.terrain_seed),
-                    '--actor-lr', '0.0000001', '--no-adaptive-lr', '--freeze-proprio', '--target-action-std', '.02',
-                    '--training-levels', '0', '6', '9', '12', '15', '17', '17', '17', '17', '17']
+                    # 保留来源的本体冻结、探索幅度与地形采样，避免低估联合训练显存。
+                    '--actor-lr', str(saved['train_config']['actor_lr'])]
                 state.update(stage=trial.name, log=str(trial/'training.log'))
                 save_json(folder/'status.json', state)
                 with (trial/'memory_mib.csv').open('w') as memory, (trial/'training.log').open('w') as log:
@@ -159,6 +162,7 @@ def main():
                             and metadata['depth_capture_calls'] >= captures+1 and bool(samples)
                             and any(int(row['actor_steps']) > 0 for row in rows) and not overflow)
                 result.update(status='passed' if verified else 'unverified', training_run=str(run),
+                    training_config=json.loads((run/'config.json').read_text())['train'],
                     metadata=metadata, contact_overflow_messages=overflow,
                     transitions_per_second=num_envs*args.horizon*args.iterations/float(rows[-1]['elapsed_seconds']),
                     optimizer_update_seconds_mean=sum(float(row['ppo_update_seconds']) for row in rows)/len(rows))
