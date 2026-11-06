@@ -45,7 +45,8 @@ def main():
     parser.add_argument('--kl-stop-multiplier', type=float)
     parser.add_argument('--route-following', action='store_true', default=None)
     parser.add_argument('--walking-gait', action='store_true', default=None)
-    parser.add_argument('--freeze-proprio', action='store_true', default=None)
+    parser.add_argument('--freeze-proprio', action=argparse.BooleanOptionalAction, default=None,
+                        help='是否固定本体编码与速度头；恢复权重后也可显式解冻')
     parser.add_argument('--proprio-only', action='store_true', default=None,
                         help='训练仅本体对照：关闭相机，融合中的视觉64维恒为零')
     parser.add_argument('--target-action-std', type=float)
