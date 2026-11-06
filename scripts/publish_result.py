@@ -78,8 +78,10 @@ def main():
                 cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT, check=True)
         video_report_path = next(line.split('=', 1)[1]
             for line in log.read_text().splitlines() if line.startswith('EVALUATION='))
-        if not json.loads(Path(video_report_path).read_text())['records'][0]['success']:
-            raise RuntimeError(f'{label}单环境录像重放未成功，保留报告但不发布成功视频')
+        video_report = json.loads(Path(video_report_path).read_text())
+        if (not video_report['records'][0]['success'] or video_report['vx_rmse'] > .1
+                or not gait_passed(video_report)):
+            raise RuntimeError(f'{label}录像重放未通过路线/速度/步态检查，保留报告但不发布')
         shutil.copyfile(video_report_path, delivery/f'video_{label}_evaluation.json')
         subprocess.run([str(ROOT/'run.sh'), 'python', '-m', 'scripts.plot_gait',
                         str(delivery/f'student_{label}_stairs.gait.csv')], cwd=ROOT, check=True)

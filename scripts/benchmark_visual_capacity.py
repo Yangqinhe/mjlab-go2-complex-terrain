@@ -94,6 +94,14 @@ def main():
         '--query-gpu=name,uuid,memory.total,driver_version', '--format=csv,noheader,nounits'], text=True)
     state['gpu'] = dict(zip(['name', 'uuid', 'total_memory_mib', 'driver_version'],
                            [value.strip() for value in next(csv.reader(info.splitlines()))]))
+    state['baseline_gpu_memory_mib'] = float(subprocess.check_output([
+        'nvidia-smi', '-i', args.gpu, '--query-gpu=memory.used',
+        '--format=csv,noheader,nounits'], text=True).strip())
+    processes = subprocess.check_output(['nvidia-smi',
+        '--query-compute-apps=gpu_uuid,pid,used_memory', '--format=csv,noheader,nounits'], text=True)
+    state['baseline_compute_processes'] = [dict(pid=int(pid.strip()), memory_mib=memory.strip())
+        for uuid, pid, memory in csv.reader(processes.splitlines()) if uuid.strip() == state['gpu']['uuid']]
+    state['memory_scope'] = 'Whole GPU including existing background processes; no unrelated process stopped'
     save_json(folder/'arguments.json', {k:str(v) if isinstance(v, Path) else v for k,v in vars(args).items()})
     save_json(folder/'status.json', state)
     print(f'CAPACITY_DIR={folder}', flush=True)
