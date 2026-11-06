@@ -206,6 +206,10 @@ class Go2Task:
             "slip": w.slip*slip, "collision": w.collision*collision.float(),
             "foot_clearance": w.foot_clearance*clearance_error,
         }
+        if w.front_hip_deviation or w.front_stance_width:
+            from env.posture import front_posture_terms
+            terms.update(front_posture_terms(self, command, flat_mask(self, local_x=(
+                r.root_link_pos_w[:, 0]-self.env.scene.env_origins[:, 0]+self.config.terrain.spawn_x))))
         free = self.config.command.mode == 'free'
         stopping = command.abs().amax(-1) < .03
         if self.schedule is not None:

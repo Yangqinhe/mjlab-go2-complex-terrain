@@ -62,6 +62,7 @@ def task_configs(source, strength, route_envs, free_envs, seed):
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--resume')
+    p.add_argument('--front-posture-scale',type=float,default=0.)
     p.add_argument('--reference',default=str(REFERENCE))
     p.add_argument('--visual',default=str(VISUAL))
     p.add_argument('--free-reference',default=str(FREE_REFERENCE))
@@ -115,6 +116,9 @@ def main():
     with torch.no_grad():agent.actor.log_std.add_(torch.log(torch.tensor(args.std)/agent.actor.log_std.exp().mean()))
     route_cfg,free_cfg=task_configs(source,args.strength,args.route_envs,args.free_envs,args.seed)
     free_cfg.command.stop_script_fraction=args.stop_script_fraction
+    if args.front_posture_scale:
+        from env.posture import configure_front_posture
+        for cfg in (route_cfg,free_cfg):configure_front_posture(cfg,args.front_posture_scale)
     folder=new_run('student_ppo',route_cfg,training)
     save_json(folder/'task_configs.json',dict(route=asdict(route_cfg),free=asdict(free_cfg),strength=args.strength))
     metadata=dict(status='running',parent=args.resume or args.reference,reference=args.reference,

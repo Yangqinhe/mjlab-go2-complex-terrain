@@ -25,17 +25,27 @@ def main():
     parser.add_argument('--free-envs',type=int,default=128)
     parser.add_argument('--visual-source',default=str(VISUAL))
     parser.add_argument('--initial-checkpoint')
+    parser.add_argument('--front-posture-finetune',action='store_true',help='仅在域随机化通过后，从完整权重微调前腿站姿')
     parser.add_argument('--visual-updates-per-refresh',type=int,default=100)
     parser.add_argument('--visual-refresh-every',type=int,default=3)
     parser.add_argument('--screen-only',action='store_true',help='只用于候选初始化对比，不是持续训练默认行为')
     args=parser.parse_args()
+    if args.front_posture_finetune and not args.initial_checkpoint:
+        parser.error('前腿微调必须指定已通过域随机化的完整学生检查点')
     torch.set_num_threads(1)
     folder=ROOT/'outputs'/f'{datetime.now():%Y%m%d_%H%M%S_%f}_continual_student'
     folder.mkdir()
     ref=torch.load(REFERENCE,map_location='cpu',weights_only=False)
     phi=torch.load(args.visual_source,map_location='cpu',weights_only=False)
     source=env_from_dict(ref['env_config'])
-    route,free=task_configs(source,.25,args.route_envs,args.free_envs,85000)
+    initial_strength=1. if args.front_posture_finetune else .25
+    def configured_tasks(strength,route_envs,free_envs,seed):
+        route,free=task_configs(source,strength,route_envs,free_envs,seed)
+        if args.front_posture_finetune:
+            from env.posture import configure_front_posture
+            for cfg in (route,free):configure_front_posture(cfg,1.)
+        return route,free
+    route,free=configured_tasks(initial_strength,args.route_envs,args.free_envs,85000)
     training=TrainConfig(**ref['train_config'])
     initial=new_run('student_ppo',route,training)
     seed=torch.load(args.initial_checkpoint,map_location='cpu',weights_only=False) if args.initial_checkpoint else dict(ref)
@@ -52,7 +62,7 @@ def main():
         randomization=asdict(route.randomization),depth_geometry_groups=[0,4])
     save_json(initial/'deployment.json',deployment)
     save_json(initial/'task_configs.json',dict(route=asdict(route),free=asdict(free)))
-    state=dict(status='running',round=0,strength=.25,selected_checkpoint=str(checkpoint),
+    state=dict(status='running',round=0,strength=initial_strength,front_posture_finetune=args.front_posture_finetune,selected_checkpoint=str(checkpoint),
                reference=str(REFERENCE),reference_sha256=hashlib.sha256(REFERENCE.read_bytes()).hexdigest(),
                visual_source=args.visual_source,folder=str(folder),records=[],
                goal='完整域随机化下六档固定120+独立120路线全完成、速度/60ms步态通过，33项变速停车及20/35/50度边界通过')
@@ -85,6 +95,20 @@ def main():
         return (report['success_rate']==1. and report['vx_rmse']<=.1 and gait_passed(report)
                 and not report['partial_evaluation'] and report['numerical_failure_rate']==0.)
 
+    def stance_check(ckpt,label,seed=56200):
+        output=folder/(label+'_front_stance.json')
+        run('scripts.audit_front_stance',['--checkpoint',ckpt,'--output',output,'--seed',seed],label+'_front_stance')
+        report=json.loads(output.read_text())
+        if not report['samples']:return dict(passed=False,error=100.,report=str(output))
+        passed=(report['failed_environments']==0 and report['samples']>=1000
+            and .244<=report['front_width_mean_m']<=.324 and report['front_width_p95_m']<=.344
+            and max(report['front_hip_abs_p95_rad'])<=.25)
+        error=(max(0.,.244-report['front_width_mean_m'])/.04
+            +max(0.,report['front_width_mean_m']-.324)/.04
+            +max(0.,report['front_width_p95_m']-.344)/.04
+            +max(0.,max(report['front_hip_abs_p95_rad'])-.25)/.15)
+        return dict(passed=passed,error=error,report=str(output))
+
     def screen(ckpt,cfg,label,route_config=None):
         reports=[];paths=[]
         for level in (0,17):
@@ -98,10 +122,12 @@ def main():
                -10*sum(r['vx_rmse'] for r in reports)-10*sum(gait_error(r) for r in reports)
                +20*command['pass_rate']-10*sum(r['maximum_drift_m'] for r in stop)/len(stop))
         if not gait_safe:score-=1000.
-        return dict(score=score,gait_safe=gait_safe,route_min_success=min(r['success_rate'] for r in reports),
+        stance=stance_check(ckpt,label) if args.front_posture_finetune else dict(passed=True,error=0.)
+        score-=30*stance['error']
+        return dict(score=score,front_stance=stance,gait_safe=gait_safe,route_min_success=min(r['success_rate'] for r in reports),
                     route_pass=all(route_pass(r) for r in reports),command_pass_rate=command['pass_rate'],
                     stop_passes=sum(r['passed'] for r in stop),reports=paths,
-                    passed=all(route_pass(r) for r in reports) and command['pass_rate']==1.)
+                    passed=all(route_pass(r) for r in reports) and command['pass_rate']==1. and stance['passed'])
 
     def full_validation(ckpt,cfg,label,final=False,route_config=None):
         paths=[]
@@ -127,10 +153,15 @@ def main():
                 if not route_pass(report):return dict(passed=False,reports=paths+fresh+[str(path)],reason='camera_boundary')
         path,report=evaluate_commands(ckpt,cfg,label+'_commands_independent',seeds=(54700,54701,54702))
         if report['pass_rate']!=1.:return dict(passed=False,reports=paths+fresh+[str(path)],reason='fresh_commands')
-        return dict(passed=True,reports=paths,height_evaluations=fresh,commands=str(path))
+        stance=stance_check(ckpt,label+'_independent',seed=56300) if args.front_posture_finetune else None
+        if stance and not stance['passed']:
+            return dict(passed=False,reports=paths+fresh,front_stance=stance,reason='front_stance')
+        return dict(passed=True,reports=paths,height_evaluations=fresh,commands=str(path),front_stance=stance)
 
-    strength=.25;best=str(checkpoint);best_screen=None
-    anchor=20.;lr=5e-6;stale=0;stop_fraction=.25;freeze=True
+    strength=initial_strength;best=str(checkpoint);best_screen=None
+    anchor=.2 if args.front_posture_finetune else 20.
+    lr=2e-6 if args.front_posture_finetune else 5e-6
+    stale=0;stop_fraction=.25;freeze=True
     route_envs=args.route_envs;free_envs=args.free_envs
     errors=0
     try:
@@ -140,8 +171,8 @@ def main():
             state.update(status='screen_only_finished');save_json(folder/'status.json',state);return
         while True:
             state['round']+=1;round_id=state['round'];label=f'round_{round_id:05d}'
-            route_cfg,free_cfg=task_configs(source,strength,route_envs,free_envs,85000+round_id)
-            if stale and stale%args.visual_refresh_every==0:
+            route_cfg,free_cfg=configured_tasks(strength,route_envs,free_envs,85000+round_id)
+            if not args.front_posture_finetune and stale and stale%args.visual_refresh_every==0:
                 # PPO固定视觉编码器以控制显存；停滞时单独顺序BPTT训练视觉，教师始终冻结。
                 aligned=deepcopy(route_cfg)
                 aligned.randomization.frame_delay_steps=0;aligned.randomization.frame_dropout=0.
@@ -165,7 +196,9 @@ def main():
             arguments=['--resume',best,'--reference',REFERENCE,'--visual',args.visual_source,
                        '--iterations',args.updates_per_round,'--route-envs',route_envs,'--free-envs',free_envs,
                        '--strength',strength,'--anchor-coef',anchor,'--actor-lr',lr,
-                       '--std',.04,'--stop-script-fraction',stop_fraction,'--seed',85000+round_id]
+                       '--std',.02 if args.front_posture_finetune else .04,'--stop-script-fraction',stop_fraction,'--seed',85000+round_id]
+            if args.front_posture_finetune:
+                arguments+=['--front-posture-scale',min(1.,.1*round_id),'--free-anchor-weight',0.]
             if freeze:arguments+=['--freeze-proprio']
             try:
                 text=run('scripts.train_student_multitask',arguments,label+'_train')
@@ -199,11 +232,14 @@ def main():
                                      checkpoint=best,validation=validation)
                         save_json(folder/'status.json',state);print(f'CONTINUAL_PERFORMANCE_PASSED={folder}',flush=True);return
                     strength=min(1.,strength+.25)
-                    next_route,next_free=task_configs(source,strength,route_envs,free_envs,85000+round_id)
+                    next_route,next_free=configured_tasks(strength,route_envs,free_envs,85000+round_id)
                     # 新强度必须重新测基线，不能拿弱随机化的高分压住后续选模。
                     best_screen=screen(best,next_free,label+'_next_strength',route_config=next_route)
                     stale=0
-            if best_screen['route_min_success']<1.:
+            if args.front_posture_finetune:
+                anchor=.2;freeze=True
+                route_envs=args.route_envs;free_envs=args.free_envs
+            elif best_screen['route_min_success']<1.:
                 anchor=min(80.,anchor*1.1);freeze=True
                 route_envs=args.route_envs+args.free_envs//2;free_envs=args.free_envs//2
             else:

@@ -45,6 +45,11 @@ def main():
     title = 'Go2学生完整域随机化验收通过' if passed else 'Go2学生训练中断，尚未完成验收'
     message = ('训练已自动停止。路线、速度、停车及相机边界指标通过，视频与交付待复核。'
                if passed else f"当前状态：{state['status']}。请检查训练日志，不属于训练成功。")
+    if passed and state.get('front_posture_finetune'):
+        title = 'Go2前腿站姿微调验收通过'
+        message = '前腿站宽与外展角指标、完整域随机化任务指标通过，训练已停止，视频待复核。'
+    elif passed and (folder/'front_stance_finetune_queue.json').exists():
+        message = '域随机化阶段通过并停止，已排队接续前腿站姿微调；最终微调策略尚未发布。'
     report = folder / ('训练验收通过通知.md' if passed else '训练中断通知.md')
     lines = [f'# {title}', '', f'时间：{now}', '', message, '',
              f"状态：`{state['status']}`", f'检查点：`{checkpoint}`',
@@ -54,6 +59,8 @@ def main():
                   '速度RMSE≤0.1m/s、连续腾空≤0.06秒及原步态指标；'
                   '33项变速停车与独立33项、20/35/50°相机边界。', '',
                   '这是仿真指标通过通知，尚未代替视频审看或实机验证。', '',
+                  '前腿站姿阶段另要求：平均站宽24.4～32.4cm、P95≤34.4cm，前髋绝对角P95≤0.25rad。'
+                  if state.get('front_posture_finetune') else '前腿站姿微调是否待接续，以排队状态为准。', '',
                   f"权重SHA256：`{hashlib.sha256(Path(checkpoint).read_bytes()).hexdigest()}`", '',
                   '验收报告：', '', '```json',
                   json.dumps(state['validation'], ensure_ascii=False, indent=2), '```']

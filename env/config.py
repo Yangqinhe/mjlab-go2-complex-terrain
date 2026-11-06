@@ -58,6 +58,12 @@ class GaitConfig:
 
 @dataclass
 class TrainingRewardConfig:
+    # 后续前腿微调专用；原任务和历史checkpoint默认关闭。
+    front_hip_deviation: float = 0.
+    front_stance_width: float = 0.
+    front_hip_deadband: float = .15
+    front_width_target: float = .284
+    front_width_tolerance: float = .04
     tracking_xy: float = 1.5
     tracking_yaw: float = .5
     tracking_yaw_scale: float = .25
