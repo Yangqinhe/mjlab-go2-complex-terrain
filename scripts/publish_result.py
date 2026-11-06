@@ -64,6 +64,10 @@ def main():
     shutil.copyfile(evaluation, delivery/'student_evaluation.json')
     shutil.copyfile(checkpoint.parent.parent/'config.json', delivery/'config.json')
     shutil.copyfile(checkpoint.parent.parent/'deployment.json', delivery/'deployment.json')
+    for name in ['calibration.json', 'velocity_metrics.csv', 'ppo_source_config.json']:
+        path = checkpoint.parent.parent/name
+        if path.exists():
+            shutil.copyfile(path, delivery/name)
     if state.get('teacher'):
         shutil.copyfile(state['teacher'], delivery/'teacher_final.pt')
     # 从已通过评估的layout0案例单独重放，视频只记录一个回合，避免其他世界reset穿插。
