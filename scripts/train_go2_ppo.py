@@ -53,6 +53,8 @@ def main():
     parser.add_argument('--long-flight-penalty', type=float)
     parser.add_argument('--flight-penalty', type=float)
     parser.add_argument('--terrain-support-reward', type=float, help='复杂地形落足重叠系数，0保留原奖励')
+    parser.add_argument('--terrain-support-downstairs-only', action=argparse.BooleanOptionalAction,
+                        default=None, help='将落足重叠限制在下楼梯及其前后0.2m')
     parser.add_argument('--training-levels', type=int, nargs='+')
     args = parser.parse_args()
     if args.proprio_only and args.stage != 'student_ppo':
@@ -81,6 +83,8 @@ def main():
         config.gait.flight = args.flight_penalty
     if args.terrain_support_reward is not None:
         config.gait.terrain_support = args.terrain_support_reward
+    if args.terrain_support_downstairs_only is not None:
+        config.gait.terrain_support_downstairs_only = args.terrain_support_downstairs_only
     if args.flat or args.complex:
         config.terrain.obstacles = not args.flat
     for name in ['step_height_min', 'step_height_max', 'levels', 'layouts']:

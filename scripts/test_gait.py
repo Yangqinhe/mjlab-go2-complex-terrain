@@ -56,6 +56,12 @@ def main():
     assert torch.allclose(cost, torch.tensor([-.4, -.2, 0., .2, .2]))
     assert not tracker.step(contact, ~nonflat, velocity, height)['gait_terrain_support'].any()
     assert not tracker.step(contact, nonflat, velocity, height, active=nonflat)['gait_terrain_support'].any()
+    # 额外区域掩码不改变接触/腾空统计，只限定训练奖励；初始化仍不计费。
+    subset = torch.tensor([True, False, True, True, False])
+    scoped = tracker.step(contact, nonflat, velocity, height, support_mask=subset)['gait_terrain_support']
+    assert torch.allclose(scoped, cost*subset)
+    assert not tracker.step(contact, nonflat, velocity, height,
+                            active=nonflat, support_mask=subset)['gait_terrain_support'].any()
     good_report = dict(report, partial_evaluation=False, unique_layouts=20, success_rate=1., vx_rmse=.03)
     stopped = dict(good_report, success_rate=0., vx_rmse=.3)
     repair = dict(good_report, gait=dict(report['gait'], all_max_flight=.1))

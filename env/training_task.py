@@ -188,9 +188,15 @@ class Go2Task:
             terms['route_yaw'] = w.route_yaw*(angular[:, 2]-command[:, 2]).square()
         local_x = pos[:, 0]+self.config.terrain.spawn_x
         gait_contact = self.env.scene['feet'].data.force[:, self.foot_order, 2].abs() > self.config.gait.contact_force
+        support_mask = None
+        if self.config.gait.terrain_support_downstairs_only:
+            start, end = self.config.terrain.regions()['stairs_down']
+            # 提前半个机身长度准备换足，尾足离开末级前继续保持落足重叠。
+            support_mask = (local_x > start-.2) & (local_x < end+.2)
         terms.update(self.gait.step(gait_contact, flat_mask(self, local_x) & ~numerical,
                                    r.root_link_lin_vel_b[:, 2], height,
-                                   active=(self.env.episode_length_buf*self.dt > .5) & ~numerical))
+                                   active=(self.env.episode_length_buf*self.dt > .5) & ~numerical,
+                                   support_mask=support_mask))
         regions = self.config.terrain.regions()
         for i, (start, end) in enumerate(regions.values()):
             self.visited[:, i] |= (local_x >= start) & (local_x <= end)

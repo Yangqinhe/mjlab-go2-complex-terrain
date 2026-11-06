@@ -37,6 +37,7 @@ class GaitConfig:
     low_support: float = -2.
     # 可选的复杂地形落足重叠：2足中性，3/4足奖励，0/1足惩罚；旧配置保持0。
     terrain_support: float = 0.
+    terrain_support_downstairs_only: bool = False
     wrong_pair: float = -2.
     diagonal_support: float = .4
     vertical: float = -3.

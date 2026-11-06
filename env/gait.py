@@ -33,7 +33,7 @@ class GaitTracker:
                       self.max_flight, self.sums, self.touchdowns, self.total):
             value[ids] = 0
 
-    def step(self, contact, flat, vertical_velocity, height, active=None):
+    def step(self, contact, flat, vertical_velocity, height, active=None, support_mask=None):
         cfg = self.config
         count = contact.sum(-1)
         flight = count == 0
@@ -69,7 +69,9 @@ class GaitTracker:
                     gait_short_swing=flat*(cfg.short_swing*(cfg.minimum_swing-swing).clamp(min=0)
                                           *touchdown*(swing > 0)).sum(-1))
         if cfg.terrain_support:
-            terms['gait_terrain_support'] = cfg.terrain_support*(active & ~flat)*(count-2).clamp(-2, 1)
+            # 默认仍作用于所有非平地；任务可将重叠约束限制在下楼梯过渡。
+            terrain = ~flat if support_mask is None else support_mask
+            terms['gait_terrain_support'] = cfg.terrain_support*(active & terrain)*(count-2).clamp(-2, 1)
         return terms
 
     def snapshot(self, index):
