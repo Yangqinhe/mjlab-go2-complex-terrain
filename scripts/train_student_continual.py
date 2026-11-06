@@ -6,6 +6,7 @@ from datetime import datetime
 import argparse
 import hashlib
 import json
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -25,20 +26,37 @@ def main():
     parser.add_argument('--free-envs',type=int,default=128)
     parser.add_argument('--visual-source',default=str(VISUAL))
     parser.add_argument('--initial-checkpoint')
+    parser.add_argument('--resume-controller',type=Path,help='恢复控制目录，保留选模与课程，并优先评估已完成的训练批次')
     parser.add_argument('--front-posture-finetune',action='store_true',help='仅在域随机化通过后，从完整权重微调前腿站姿')
     parser.add_argument('--visual-updates-per-refresh',type=int,default=100)
     parser.add_argument('--visual-refresh-every',type=int,default=3)
     parser.add_argument('--screen-only',action='store_true',help='只用于候选初始化对比，不是持续训练默认行为')
     args=parser.parse_args()
-    if args.front_posture_finetune and not args.initial_checkpoint:
+    if args.front_posture_finetune and not (args.initial_checkpoint or args.resume_controller):
         parser.error('前腿微调必须指定已通过域随机化的完整学生检查点')
     torch.set_num_threads(1)
-    folder=ROOT/'outputs'/f'{datetime.now():%Y%m%d_%H%M%S_%f}_continual_student'
-    folder.mkdir()
+    recovered=None;pending_run=None
+    if args.resume_controller:
+        folder=args.resume_controller.resolve()
+        recovered=json.loads((folder/'status.json').read_text())
+        history=folder/'resume_history';history.mkdir(exist_ok=True)
+        save_json(history/f'{datetime.now():%Y%m%d_%H%M%S_%f}_before_resume.json',recovered)
+        args.front_posture_finetune=recovered.get('front_posture_finetune',False)
+        args.visual_source=recovered['visual_source']
+        pending_run=recovered.get('pending_run')
+        if not pending_run and str(recovered.get('stage','')).endswith('_train'):
+            log=Path(recovered['log'])
+            if log.exists():
+                finished=[line.split('=',1)[1] for line in log.read_text().splitlines()
+                          if line.startswith('MULTITASK_FINISHED=')]
+                if finished:pending_run=finished[-1]
+    else:
+        folder=ROOT/'outputs'/f'{datetime.now():%Y%m%d_%H%M%S_%f}_continual_student'
+        folder.mkdir()
     ref=torch.load(REFERENCE,map_location='cpu',weights_only=False)
     phi=torch.load(args.visual_source,map_location='cpu',weights_only=False)
     source=env_from_dict(ref['env_config'])
-    initial_strength=1. if args.front_posture_finetune else .25
+    initial_strength=recovered['strength'] if recovered else (1. if args.front_posture_finetune else .25)
     def configured_tasks(strength,route_envs,free_envs,seed):
         route,free=task_configs(source,strength,route_envs,free_envs,seed)
         if args.front_posture_finetune:
@@ -46,31 +64,41 @@ def main():
             for cfg in (route,free):configure_front_posture(cfg,1.)
         return route,free
     route,free=configured_tasks(initial_strength,args.route_envs,args.free_envs,85000)
-    training=TrainConfig(**ref['train_config'])
-    initial=new_run('student_ppo',route,training)
-    seed=torch.load(args.initial_checkpoint,map_location='cpu',weights_only=False) if args.initial_checkpoint else dict(ref)
-    seed['actor']=dict(seed['actor'])
-    if not args.initial_checkpoint:
-        for k,v in phi['actor'].items():
-            if k.startswith('visual_encoder.'):seed['actor'][k]=v
-    seed['env_config']=asdict(route)
-    seed['initialization']=dict(common_source=args.initial_checkpoint or str(REFERENCE),
-                                visual_source='included in checkpoint' if args.initial_checkpoint else args.visual_source,ppo_updates=0)
-    checkpoint=initial/'checkpoints/final.pt';torch.save(seed,checkpoint)
-    save_json(initial/'metadata.json',dict(status='initialization_only',**seed['initialization']))
-    deployment=deepcopy(ref['deployment']);deployment.update(camera=asdict(route.camera),
-        randomization=asdict(route.randomization),depth_geometry_groups=[0,4])
-    save_json(initial/'deployment.json',deployment)
-    save_json(initial/'task_configs.json',dict(route=asdict(route),free=asdict(free)))
-    state=dict(status='running',round=0,strength=initial_strength,front_posture_finetune=args.front_posture_finetune,selected_checkpoint=str(checkpoint),
-               reference=str(REFERENCE),reference_sha256=hashlib.sha256(REFERENCE.read_bytes()).hexdigest(),
-               visual_source=args.visual_source,folder=str(folder),records=[],
-               goal='完整域随机化下六档固定120+独立120路线全完成、速度/60ms步态通过，33项变速停车及20/35/50度边界通过')
+    if recovered:
+        state=recovered
+        checkpoint=Path(state['selected_checkpoint'])
+        state['round']=max((r['round'] for r in state['records']),default=0)
+        state.update(status='running',resumed=True,pending_run=pending_run,folder=str(folder))
+        state.pop('error',None)
+    else:
+        training=TrainConfig(**ref['train_config'])
+        initial=new_run('student_ppo',route,training)
+        seed=torch.load(args.initial_checkpoint,map_location='cpu',weights_only=False) if args.initial_checkpoint else dict(ref)
+        seed['actor']=dict(seed['actor'])
+        if not args.initial_checkpoint:
+            for k,v in phi['actor'].items():
+                if k.startswith('visual_encoder.'):seed['actor'][k]=v
+        seed['env_config']=asdict(route)
+        seed['initialization']=dict(common_source=args.initial_checkpoint or str(REFERENCE),
+                                    visual_source='included in checkpoint' if args.initial_checkpoint else args.visual_source,ppo_updates=0)
+        checkpoint=initial/'checkpoints/final.pt';torch.save(seed,checkpoint)
+        save_json(initial/'metadata.json',dict(status='initialization_only',**seed['initialization']))
+        deployment=deepcopy(ref['deployment']);deployment.update(camera=asdict(route.camera),
+            randomization=asdict(route.randomization),depth_geometry_groups=[0,4])
+        save_json(initial/'deployment.json',deployment)
+        save_json(initial/'task_configs.json',dict(route=asdict(route),free=asdict(free)))
+        state=dict(status='running',round=0,strength=initial_strength,front_posture_finetune=args.front_posture_finetune,selected_checkpoint=str(checkpoint),
+                   reference=str(REFERENCE),reference_sha256=hashlib.sha256(REFERENCE.read_bytes()).hexdigest(),
+                   visual_source=args.visual_source,folder=str(folder),records=[],
+                   goal='完整域随机化下六档固定120+独立120路线全完成、速度/60ms步态通过，33项变速停车及20/35/50度边界通过')
     save_json(folder/'status.json',state);print(f'CONTINUAL_DIR={folder}',flush=True)
 
     def run(module,arguments,label):
         log=folder/(label+'.log')
         state.update(stage=label,log=str(log));save_json(folder/'status.json',state)
+        if log.exists():
+            history=folder/'resume_history';history.mkdir(exist_ok=True)
+            shutil.copy2(log,history/f'{datetime.now():%Y%m%d_%H%M%S_%f}_{log.name}')
         with log.open('w') as f:
             subprocess.run([sys.executable,'-m',module,*map(str,arguments)],cwd=ROOT,stdout=f,stderr=subprocess.STDOUT,check=True)
         return log.read_text()
@@ -158,21 +186,34 @@ def main():
             return dict(passed=False,reports=paths+fresh,front_stance=stance,reason='front_stance')
         return dict(passed=True,reports=paths,height_evaluations=fresh,commands=str(path),front_stance=stance)
 
-    strength=initial_strength;best=str(checkpoint);best_screen=None
+    strength=state['strength'];best=str(checkpoint);best_screen=state.get('best_screen') if recovered else None
     anchor=.2 if args.front_posture_finetune else 20.
     lr=2e-6 if args.front_posture_finetune else 5e-6
     stale=0;stop_fraction=.25;freeze=True
     route_envs=args.route_envs;free_envs=args.free_envs
     errors=0
+    if recovered:
+        anchor=state.get('next_anchor',anchor);lr=state.get('next_lr',lr)
+        for record in reversed(state['records']):
+            if record['selected']:break
+            stale+=1
+        stop_fraction=state.get('next_stop_fraction',stop_fraction)
+        freeze=state.get('next_freeze_proprio',args.front_posture_finetune or best_screen['route_min_success']<1.)
+        route_envs=state.get('next_route_envs',route_envs);free_envs=state.get('next_free_envs',free_envs)
+        if pending_run:
+            previous=json.loads((Path(pending_run)/'metadata.json').read_text())['arguments']
+            anchor=previous['anchor_coef'];lr=previous['actor_lr'];stop_fraction=previous['stop_script_fraction']
+            freeze=previous['freeze_proprio'];route_envs=previous['route_envs'];free_envs=previous['free_envs']
     try:
-        best_screen=screen(best,free,'initial',route_config=route)
-        state.update(initial_screen=best_screen,selected_score=best_screen['score']);save_json(folder/'status.json',state)
+        if best_screen is None:
+            best_screen=screen(best,free,'initial',route_config=route)
+            state.update(initial_screen=best_screen,selected_score=best_screen['score']);save_json(folder/'status.json',state)
         if args.screen_only:
             state.update(status='screen_only_finished');save_json(folder/'status.json',state);return
         while True:
             state['round']+=1;round_id=state['round'];label=f'round_{round_id:05d}'
             route_cfg,free_cfg=configured_tasks(strength,route_envs,free_envs,85000+round_id)
-            if not args.front_posture_finetune and stale and stale%args.visual_refresh_every==0:
+            if not pending_run and not args.front_posture_finetune and stale and stale%args.visual_refresh_every==0:
                 # PPO固定视觉编码器以控制显存；停滞时单独顺序BPTT训练视觉，教师始终冻结。
                 aligned=deepcopy(route_cfg)
                 aligned.randomization.frame_delay_steps=0;aligned.randomization.frame_dropout=0.
@@ -201,8 +242,13 @@ def main():
                 arguments+=['--front-posture-scale',min(1.,.1*round_id),'--free-anchor-weight',0.]
             if freeze:arguments+=['--freeze-proprio']
             try:
-                text=run('scripts.train_student_multitask',arguments,label+'_train')
-                run_dir=Path(next(x.split('=',1)[1] for x in text.splitlines() if x.startswith('MULTITASK_FINISHED=')))
+                if pending_run:
+                    run_dir=Path(pending_run);pending_run=None
+                    print(f'RECOVER_COMPLETED_TRAINING={run_dir}',flush=True)
+                else:
+                    text=run('scripts.train_student_multitask',arguments,label+'_train')
+                    run_dir=Path(next(x.split('=',1)[1] for x in text.splitlines() if x.startswith('MULTITASK_FINISHED=')))
+                state['pending_run']=str(run_dir);save_json(folder/'status.json',state)
                 candidate=str(run_dir/'checkpoints/final.pt')
                 metadata=json.loads((run_dir/'metadata.json').read_text())
                 if metadata['numerical_failures']:raise RuntimeError('训练出现数值异常，拒绝选为下一轮来源')
@@ -219,6 +265,7 @@ def main():
             record=dict(round=round_id,strength=strength,checkpoint=candidate,screen=result,
                         selected=accepted,anchor=anchor,actor_lr=lr,freeze_proprio=freeze)
             state['records'].append(record)
+            state.pop('pending_run',None)
             if accepted:
                 best=candidate;best_screen=result;stale=0
             else:stale+=1
@@ -249,7 +296,8 @@ def main():
             if stale>=5:lr=max(1e-6,lr*.8);stale=0
             state.update(status='running',strength=strength,selected_checkpoint=best,
                          selected_score=best_screen['score'],best_screen=best_screen,
-                         next_anchor=anchor,next_lr=lr)
+                         next_anchor=anchor,next_lr=lr,next_stop_fraction=stop_fraction,
+                         next_freeze_proprio=freeze,next_route_envs=route_envs,next_free_envs=free_envs)
             save_json(folder/'status.json',state)
             print(json.dumps(dict(round=round_id,strength=strength,selected=best,score=best_screen['score'])),flush=True)
     except BaseException as error:
