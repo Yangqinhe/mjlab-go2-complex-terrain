@@ -58,6 +58,8 @@ def main():
         config.latent_coef = args.latent_coef
     saved = torch.load(args.resume, map_location=args.device, weights_only=False) if args.resume else None
     training = TrainConfig(**(saved or checkpoint)['train_config'])
+    if training.proprio_only:
+        raise ValueError('本体基线不作为视觉蒸馏起点，请使用视觉学生或教师权重')
     student = PerceptiveActor('student', training).to(args.device)
     student.copy_common(teacher)
     critic = PrivilegedCritic(training).to(args.device)

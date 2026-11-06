@@ -42,7 +42,7 @@ def evaluate(folder, name, checkpoint, level=0, video=None, seeds=None):
 
 
 def route_passed(report, min_success=.8, max_rmse=.1):
-    return (report.get('visual_ablation', 'none') == 'none'
+    return (not report.get('proprio_only', False) and report.get('visual_ablation', 'none') == 'none'
             and not report['partial_evaluation'] and report['unique_layouts'] >= 20
             and report['success_rate'] >= min_success and report['vx_rmse'] <= max_rmse)
 

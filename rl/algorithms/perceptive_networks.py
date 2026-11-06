@@ -45,6 +45,7 @@ class PerceptiveActor(nn.Module):
         super().__init__()
         config = config or TrainConfig()
         self.mode = mode
+        self.proprio_only = config.proprio_only and mode == 'student'
         self.history = mlp(config.history_dims, final_tanh=True)
         self.velocity_head = mlp(config.velocity_dims)
         self.actor = mlp(config.actor_dims, final_tanh=True)
@@ -60,6 +61,8 @@ class PerceptiveActor(nn.Module):
         z_p = self.history(history)
         velocity = (2*self.velocity_head(z_p)).clamp(-4, 4)
         z_v = self.terrain_encoder(terrain) if self.mode == "teacher" else terrain
+        if self.proprio_only:
+            z_v = torch.zeros_like(z_v)  # 单独重训的本体基线，视觉通道恒为零。
         fused = torch.cat([p, z_p, z_v, velocity], -1)
         mu = self.actor(fused)
         return mu, self.log_std.clamp(self.log_std_min, 0).exp().expand_as(mu)

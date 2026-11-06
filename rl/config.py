@@ -36,6 +36,7 @@ class TrainConfig:
     freeze_proprio: bool = False
     target_action_std: float | None = None
     training_levels: tuple[int, ...] | None = None
+    proprio_only: bool = False
 
 
 @dataclass

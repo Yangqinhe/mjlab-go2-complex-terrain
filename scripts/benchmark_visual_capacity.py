@@ -11,6 +11,8 @@ from pathlib import Path
 import subprocess
 import time
 
+import torch
+
 from rl.run_io import ROOT, save_json
 
 
@@ -83,6 +85,8 @@ def main():
         component_profile(args.checkpoint, args.profile_envs, args.seed, args.terrain_seed, args.profile_output)
         return
     checkpoint = args.checkpoint.resolve()
+    if torch.load(checkpoint, map_location='cpu', weights_only=False)['train_config'].get('proprio_only', False):
+        raise ValueError('本体基线不能作为视觉容量验收权重')
     folder = ROOT/'outputs'/f'{datetime.now():%Y%m%d_%H%M%S}_visual_capacity'
     folder.mkdir()
     state = dict(status='running', checkpoint=str(checkpoint),

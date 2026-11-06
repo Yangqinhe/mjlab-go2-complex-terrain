@@ -46,11 +46,15 @@ def main():
     parser.add_argument('--route-following', action='store_true', default=None)
     parser.add_argument('--walking-gait', action='store_true', default=None)
     parser.add_argument('--freeze-proprio', action='store_true', default=None)
+    parser.add_argument('--proprio-only', action='store_true', default=None,
+                        help='训练仅本体对照：关闭相机，融合中的视觉64维恒为零')
     parser.add_argument('--target-action-std', type=float)
     parser.add_argument('--long-flight-penalty', type=float)
     parser.add_argument('--flight-penalty', type=float)
     parser.add_argument('--training-levels', type=int, nargs='+')
     args = parser.parse_args()
+    if args.proprio_only and args.stage != 'student_ppo':
+        parser.error('--proprio-only只用于学生PPO对照')
     torch.set_num_threads(1)
     torch.manual_seed(args.seed if args.seed is not None else 42)
     config = EnvConfig(num_envs=args.num_envs, seed=args.seed if args.seed is not None else 42)
@@ -85,7 +89,7 @@ def main():
             setattr(config, name, value)
     for name in ['actor_lr', 'velocity_coef', 'kl_interval', 'horizon', 'batch_size',
                  'adaptive_lr', 'kl_stop_multiplier', 'save_interval', 'freeze_proprio',
-                 'target_action_std']:
+                 'target_action_std', 'proprio_only']:
         value = getattr(args, name)
         if value is not None:
             setattr(training, name, value)
@@ -115,6 +119,8 @@ def main():
         if saved['stage'] == args.stage:
             agent.actor_optimizer.load_state_dict(saved['actor_optimizer'])
             agent.critic_optimizer.load_state_dict(saved['critic_optimizer'])
+            if training.proprio_only != saved['train_config'].get('proprio_only', False):
+                agent.actor_optimizer.state.clear()
             start_iteration = saved['iteration']
             total_steps = saved.get('total_steps', saved['iteration']*saved['train_config']['horizon']
                                     *saved['env_config']['num_envs'])
@@ -135,6 +141,7 @@ def main():
     metadata = dict(parent=args.resume, device=args.device,
                     gpu=torch.cuda.get_device_name(args.device), status='running',
                     num_envs=config.num_envs, seed=config.seed, terrain_seed=config.terrain.seed,
+                    proprio_only=training.proprio_only,
                     torch_peak_scope='environment_and_training')
     save_json(folder/'metadata.json', metadata)
     print(f'RUN_DIR={folder}', flush=True)
@@ -153,11 +160,13 @@ def main():
         task.curriculum = False
         task.reset()
     deployment = deployment_config(task)
+    deployment['proprio_only'] = training.proprio_only
     save_json(folder/'deployment.json', deployment)
     visual = None
-    if mode == 'student':
+    if mode == 'student' and not training.proprio_only:
         from env.perception.runtime import VisualRuntime
         visual = VisualRuntime(task, agent.actor.visual_encoder)
+    latent = torch.zeros(config.num_envs, 64, device=args.device) if training.proprio_only else None
     if saved and saved['stage'] == args.stage and args.seed is None:
         torch.set_rng_state(saved['torch_rng'].cpu())
         torch.cuda.set_rng_state_all([state.cpu() for state in saved['cuda_rng']])
@@ -172,7 +181,7 @@ def main():
             reward_sum = torch.zeros((), device=args.device)
             term_sums = {}
             for _ in range(training.horizon):
-                states, critic_states = task.inputs(None if visual is None else visual.latent)
+                states, critic_states = task.inputs(latent if visual is None else visual.latent)
                 action, sample = agent.sample_batch(states, critic_states)
                 reward, terminated, truncated, info = task.step(action)
                 if visual is not None:
@@ -234,6 +243,8 @@ def main():
         if visual is not None:
             metadata.update(normal_captures=visual.normal_captures, reset_captures=visual.reset_captures,
                             depth_capture_calls=visual.sensor.capture_count)
+        elif training.proprio_only:
+            metadata.update(normal_captures=0, reset_captures=0, depth_capture_calls=0)
         save_json(folder/'metadata.json', metadata)
     except BaseException as error:
         metadata.update(status='interrupted' if isinstance(error, KeyboardInterrupt) else 'failed',

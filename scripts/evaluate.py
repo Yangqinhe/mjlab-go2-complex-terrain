@@ -22,7 +22,7 @@ from rl.run_io import load_policy, save_json
 def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
              video=None, max_steps=None, route_following=None, visual_ablation='none'):
     actor, original, saved = load_policy(checkpoint, device)
-    if visual_ablation != 'none' and actor.mode != 'student':
+    if visual_ablation != 'none' and (actor.mode != 'student' or actor.proprio_only):
         raise ValueError('视觉消融只适用于视觉学生')
 
     def encode_depth(pair, proprio, hidden):
@@ -38,6 +38,8 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
 
     if route_following is not None:
         original.route.enabled = route_following
+    label = actor.mode+(' | proprio-only' if actor.proprio_only else
+                        f' | {visual_ablation}' if visual_ablation != 'none' else '')
     records = []
     gait_trace = []
     writer = imageio.get_writer(str(video), fps=30, codec='libx264', quality=7) if video else None
@@ -52,7 +54,9 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                 terrain.terrain_levels[:] = level
                 terrain.env_origins[:] = terrain.terrain_origins[level, terrain.terrain_types]
                 task.reset()
-                visual = VisualRuntime(task, encode_depth) if actor.mode == 'student' else None
+                visual = (VisualRuntime(task, encode_depth)
+                          if actor.mode == 'student' and not actor.proprio_only else None)
+                latent = torch.zeros(num_envs, 64, device=device) if actor.proprio_only else None
                 complete = torch.zeros(num_envs, dtype=torch.bool, device=device)
                 flight_max = torch.zeros(num_envs, device=device)
                 flight_local_x = torch.zeros_like(flight_max)
@@ -79,7 +83,7 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                 for step in range(limit):
                     # task持有跨步缓存，后续reset需要原地写入，不能创建inference tensor。
                     with torch.no_grad():
-                        states, _ = task.inputs(None if visual is None else visual.latent)
+                        states, _ = task.inputs(latent if visual is None else visual.latent)
                         action = actor(states)[0]
                         action[complete] = 0
                         reward, terminated, truncated, info = task.step(action)
@@ -114,7 +118,7 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                         draw = ImageDraw.Draw(image)
                         draw.rectangle((0, 0, frame.shape[1], 48), fill=(0, 0, 0))
                         draw.text((15, 10),
-                            f"{actor.mode} | target vx=0.30 | actual vx={info['velocity'][0].item():.3f} | "
+                            f"{label} | target vx=0.30 | actual vx={info['velocity'][0].item():.3f} | "
                             f"time={step*task.dt:.1f}s | level={level} | seed={terrain_seed}",
                             fill=(255, 255, 255), font=ImageFont.load_default(size=24))
                         draw.text((15, 35), 'contact: '+ '  '.join(
@@ -164,6 +168,7 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                   iteration=saved['iteration'], episodes=len(records),
                   unique_layouts=len({(r['seed'], r['layout'], r['level']) for r in records}),
                   level=level, seeds=list(seeds), visual_ablation=visual_ablation,
+                  proprio_only=actor.proprio_only,
                   route_following=original.route.enabled,
                   route_override=route_following,
                   terrain_obstacles=original.terrain.obstacles,

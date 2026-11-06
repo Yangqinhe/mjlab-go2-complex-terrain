@@ -34,7 +34,8 @@ def main():
     checkpoint, evaluation = Path(state['checkpoint']), Path(state['evaluation'])
     report = json.loads(evaluation.read_text())
     saved = torch.load(checkpoint, map_location='cpu', weights_only=False)
-    if (saved['stage'] != 'student_ppo' or report.get('visual_ablation', 'none') != 'none'
+    if (saved['stage'] != 'student_ppo' or saved['train_config'].get('proprio_only', False)
+            or report.get('proprio_only', False) or report.get('visual_ablation', 'none') != 'none'
             or not report.get('terrain_obstacles')
             or not saved['env_config'].get('gait', {}).get('enabled') or not gait_passed(report)
             or report['partial_evaluation'] or report['unique_layouts'] < 20
@@ -48,7 +49,7 @@ def main():
     verified = {round(r['stair_height'], 4) for r in height_reports}
     if (not height_reports or max(r['stair_height'] for r in height_reports) < target-1e-6
             or not required.issubset(verified)
-            or any(r.get('visual_ablation', 'none') != 'none'
+            or any(r.get('proprio_only', False) or r.get('visual_ablation', 'none') != 'none'
                    or r['partial_evaluation'] or r['unique_layouts'] < 20
                    or not gait_passed(r)
                    or r['success_rate'] < .8 or r['vx_rmse'] > .1

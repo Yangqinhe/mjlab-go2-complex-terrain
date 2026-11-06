@@ -20,7 +20,8 @@ def main():
     args = parser.parse_args()
     checkpoint = args.checkpoint.resolve()
     saved = torch.load(checkpoint, map_location='cpu', weights_only=False)
-    if saved['stage'] != 'student_ppo' or not saved['env_config']['gait']['enabled']:
+    if (saved['stage'] != 'student_ppo' or saved['train_config'].get('proprio_only', False)
+            or not saved['env_config']['gait']['enabled']):
         raise ValueError('这里只验收启用步态约束的PPO视觉学生')
     if set(range(args.fresh_seed, args.fresh_seed+5)) & set(range(10000, 10005)):
         raise ValueError('新seed不能与固定选模seed重叠')
