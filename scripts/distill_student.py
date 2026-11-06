@@ -39,6 +39,7 @@ def main():
     parser.add_argument('--action-noise-std', type=float, default=0.)
     parser.add_argument('--copy-teacher-common', action='store_true', help='恢复后将共享网络重置为教师参数')
     parser.add_argument('--freeze-common', action='store_true', help='本阶段只训练视觉编码器')
+    parser.add_argument('--freeze-proprio', action='store_true', help='固定历史编码与速度估计，只适配其余模块')
     args = parser.parse_args()
     torch.set_num_threads(1)
     teacher, env_config, checkpoint = load_policy(args.teacher, args.device)
@@ -53,7 +54,8 @@ def main():
                            visual_steps=args.visual_steps, sequence_batch=args.sequence_batch,
                            training_levels=tuple(args.training_levels) if args.training_levels else None,
                            teacher_mix=args.teacher_mix, copy_teacher_common=args.copy_teacher_common,
-                           freeze_common=args.freeze_common, action_noise_std=args.action_noise_std)
+                           freeze_common=args.freeze_common, freeze_proprio=args.freeze_proprio,
+                           action_noise_std=args.action_noise_std)
     if args.latent_coef is not None:
         config.latent_coef = args.latent_coef
     saved = torch.load(args.resume, map_location=args.device, weights_only=False) if args.resume else None
@@ -91,6 +93,8 @@ def main():
             group['lr'] = value
         setattr(config, name, group['lr'])
     folder = new_run('distill', env_config, training)
+    # visual_lr=0用于动作头监督修正，省去冻结CNN/GRU的反向图。
+    student.visual_encoder.requires_grad_(config.visual_lr > 0)
     save_json(folder/'distillation.json', asdict(config))
     metadata = dict(teacher=args.teacher, parent=args.resume, status='running',
                     parent_stage=saved['stage'] if saved else None, seed=env_config.seed,
@@ -120,6 +124,9 @@ def main():
             warm = iteration <= args.warmup
             for parameter in common:
                 parameter.requires_grad_(not (warm or config.freeze_common))
+            if config.freeze_proprio:
+                student.history.requires_grad_(False)
+                student.velocity_head.requires_grad_(False)
             beta = (config.teacher_mix if config.teacher_mix is not None else
                     min(1., max(0., 1-(iteration-args.warmup)/100)))
             batch, sampling = collect_sequences(task, visual, teacher, student,
