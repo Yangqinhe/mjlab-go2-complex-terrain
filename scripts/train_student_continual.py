@@ -27,13 +27,16 @@ def main():
     parser.add_argument('--visual-source',default=str(VISUAL))
     parser.add_argument('--initial-checkpoint')
     parser.add_argument('--resume-controller',type=Path,help='恢复控制目录，保留选模与课程，并优先评估已完成的训练批次')
-    parser.add_argument('--front-posture-finetune',action='store_true',help='仅在域随机化通过后，从完整权重微调前腿站姿')
+    parser.add_argument('--front-posture-finetune',action='store_true',help='从指定学生权重微调前腿站姿；可显式选择当前随机化强度')
+    parser.add_argument('--initial-strength',type=float,help='显式沿用来源随机化强度；省略时前腿阶段默认1、常规训练默认0.25')
     parser.add_argument('--visual-updates-per-refresh',type=int,default=100)
     parser.add_argument('--visual-refresh-every',type=int,default=3)
     parser.add_argument('--screen-only',action='store_true',help='只用于候选初始化对比，不是持续训练默认行为')
     args=parser.parse_args()
     if args.front_posture_finetune and not (args.initial_checkpoint or args.resume_controller):
-        parser.error('前腿微调必须指定已通过域随机化的完整学生检查点')
+        parser.error('前腿微调必须指定作为起点的完整学生检查点')
+    if args.initial_strength is not None and not 0<args.initial_strength<=1:
+        parser.error('initial-strength必须在(0,1]')
     torch.set_num_threads(1)
     recovered=None;pending_run=None
     if args.resume_controller:
@@ -56,7 +59,8 @@ def main():
     ref=torch.load(REFERENCE,map_location='cpu',weights_only=False)
     phi=torch.load(args.visual_source,map_location='cpu',weights_only=False)
     source=env_from_dict(ref['env_config'])
-    initial_strength=recovered['strength'] if recovered else (1. if args.front_posture_finetune else .25)
+    initial_strength=recovered['strength'] if recovered else (args.initial_strength if args.initial_strength is not None
+        else (1. if args.front_posture_finetune else .25))
     def configured_tasks(strength,route_envs,free_envs,seed):
         route,free=task_configs(source,strength,route_envs,free_envs,seed)
         if args.front_posture_finetune:
