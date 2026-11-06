@@ -3,6 +3,10 @@
 import torch
 
 
+# 用户允许短暂换足腾空至60ms；这是验收上限，与训练奖励宽限独立。
+MAX_FLIGHT_SECONDS = .06
+
+
 def flat_mask(task, local_x):
     cfg = task.config.terrain
     mask = torch.ones_like(local_x, dtype=torch.bool) if not cfg.obstacles else torch.zeros_like(local_x, dtype=torch.bool)
@@ -102,9 +106,9 @@ def summarize_gait(records, dt=.02):
 def gait_passed(report):
     g = report.get('gait', {})
     return (g.get('flat_samples', 0) >= 100 and g.get('all_samples', 0) >= 100
-            and g['all_flight_fraction'] <= .01 and g['all_max_flight'] <= .040001
+            and g['all_flight_fraction'] <= .01 and g['all_max_flight'] <= (MAX_FLIGHT_SECONDS+1e-6)
             and g['flight_fraction'] <= .01
-            and g['max_flight'] <= .040001 and g['mean_contacts'] >= 1.9
+            and g['max_flight'] <= (MAX_FLIGHT_SECONDS+1e-6) and g['mean_contacts'] >= 1.9
             and g['wrong_pair_fraction'] <= .1 and g['vertical_rms'] <= .15
             and g['height_std'] <= .025
             and all(.35 <= hz <= 3. for hz in g['touchdown_hz_by_foot']))
@@ -115,8 +119,8 @@ def gait_error(report):
     if not report.get('walking_gait'):
         return 0.
     g = report['gait']
-    limits = dict(flight_fraction=.01, max_flight=.040001, wrong_pair_fraction=.1,
-                  all_flight_fraction=.01, all_max_flight=.040001,
+    limits = dict(flight_fraction=.01, max_flight=(MAX_FLIGHT_SECONDS+1e-6), wrong_pair_fraction=.1,
+                  all_flight_fraction=.01, all_max_flight=(MAX_FLIGHT_SECONDS+1e-6),
                   vertical_rms=.15, height_std=.025)
     error = sum(max(g.get(key, 1.)/limit-1, 0.) for key, limit in limits.items())
     error += max(1.9-g['mean_contacts'], 0.)/1.9

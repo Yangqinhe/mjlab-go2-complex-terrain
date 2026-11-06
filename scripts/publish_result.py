@@ -17,7 +17,7 @@ import torch
 
 from rl.run_io import ROOT, save_json
 from rl.config import STAIR_STAGES
-from env.gait import gait_passed
+from env.gait import MAX_FLIGHT_SECONDS, gait_passed
 
 
 
@@ -86,6 +86,10 @@ def main():
         raise RuntimeError('目标最高台阶及分高度评估尚未全部通过，不发布最终权重')
     delivery = folder/'delivery'
     delivery.mkdir(exist_ok=True)
+    save_json(delivery/'acceptance.json', dict(min_route_success_rate=.8,
+        max_vx_rmse=.1, max_continuous_flight_seconds=MAX_FLIGHT_SECONDS,
+        max_flight_fraction=.01, contact_sampling_hz=50,
+        note='User explicitly accepts flight durations up to and including 0.06 seconds. Training reward grace is separate.'))
     shutil.copyfile(checkpoint, delivery/'student_final.pt')
     shutil.copyfile(evaluation, delivery/'student_evaluation.json')
     shutil.copyfile(checkpoint.parent.parent/'config.json', delivery/'config.json')
@@ -146,7 +150,7 @@ def main():
     subprocess.run([str(ROOT/'run.sh'), 'python', '-m', 'scripts.plot_training',
                     str(delivery/'training_metrics.csv')], cwd=ROOT, check=True)
     revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
-    manifest = dict(source_revision=revision, checkpoint=str(checkpoint),
+    manifest = dict(source_revision=revision, max_flight_seconds=MAX_FLIGHT_SECONDS, checkpoint=str(checkpoint),
                     evaluation=str(evaluation), sha256={})
     for path in sorted(delivery.iterdir()):
         if path.name != 'manifest.json':
@@ -158,6 +162,7 @@ def main():
         f"固定vx=0.3m/s；单级最高{target*100:.0f}cm，各验收高度均通过独立完整回合评估。\n\n"
         f"其中低台阶混合路线{report['unique_layouts']}个布局，"
         f"通过率{report['success_rate']:.1%}，vx RMSE={report['vx_rmse']:.4f}m/s。\n\n"
+        f'允许最长{MAX_FLIGHT_SECONDS:.2f}秒连续换足腾空，按50Hz接触采样统计，见acceptance.json。\n\n'
         '包含平地、上下楼梯、静态碎石。所有验收高度结果单独附JSON，'
         '域随机化关闭，尚未经实机验证。\n\n'
         '路线跟踪由外部横向位置/航向反馈生成wz指令，vx固定0.3m/s；'

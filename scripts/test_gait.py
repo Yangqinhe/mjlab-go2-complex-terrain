@@ -63,6 +63,12 @@ def main():
     assert not tracker.step(contact, nonflat, velocity, height,
                             active=nonflat, support_mask=subset)['gait_terrain_support'].any()
     good_report = dict(report, partial_evaluation=False, unique_layouts=20, success_rate=1., vx_rmse=.03)
+    # 60ms包含边界，80ms仍拒绝；不改动其他步态条件。
+    brief = dict(good_report, gait=dict(report['gait'], all_max_flight=.06, max_flight=.06,
+                 all_flight_fraction=.003, flight_fraction=.003))
+    excessive = dict(brief, gait=dict(brief['gait'], all_max_flight=.08))
+    assert passed(brief) and gait_error(brief) == 0.
+    assert not passed(excessive)
     stopped = dict(good_report, success_rate=0., vx_rmse=.3)
     repair = dict(good_report, gait=dict(report['gait'], all_max_flight=.1))
     assert passed(good_report) and not passed(repair)
