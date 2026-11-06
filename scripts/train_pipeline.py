@@ -83,6 +83,7 @@ def main():
     parser.add_argument('--student-action-std', type=float, help='学生每批开始时的平均探索标准差')
     parser.add_argument('--student-long-flight-penalty', type=float, help='学生连续腾空超过宽限时间的惩罚')
     parser.add_argument('--student-flight-penalty', type=float, help='学生每个无支撑控制周期的基础惩罚')
+    parser.add_argument('--student-terrain-support-reward', type=float, help='学生复杂地形落足重叠系数')
     parser.add_argument('--student-continue-routes', action='store_true',
                         help='各档至少半数走完且RMSE≤0.2时连续更新；最佳候选另存，最终验收不变')
     parser.add_argument('--student-training-levels', type=int, nargs='+', help='学生固定混合档位，重复项作为采样权重')
@@ -234,6 +235,8 @@ def main():
             student_args += ['--long-flight-penalty', args.student_long_flight_penalty]
         if args.student_flight_penalty is not None:
             student_args += ['--flight-penalty', args.student_flight_penalty]
+        if args.student_terrain_support_reward is not None:
+            student_args += ['--terrain-support-reward', args.student_terrain_support_reward]
         if args.student_training_levels is not None:
             student_args += ['--training-levels', *args.student_training_levels]
         continuing = bool(args.resume_pipeline and args.student_start)

@@ -48,6 +48,14 @@ def main():
     assert tracker.step(~airborne, flat, velocity, height)['gait_long_flight'].item() == 0.
     tracker.reset(torch.tensor([0]))
     assert tracker.step(airborne, flat, velocity, height)['gait_long_flight'].item() == 0.
+    # 复杂地形鼓励新足落地后再离开旧支撑；不约束平地节律或初始化落地。
+    contact = torch.tensor([[0,0,0,0], [1,0,0,0], [0,1,1,0], [1,1,1,0], [1,1,1,1]], dtype=torch.bool)
+    tracker = GaitTracker(GaitConfig(enabled=True, terrain_support=.2), 5, 'cpu', .02)
+    nonflat, velocity, height = torch.zeros(5, dtype=torch.bool), torch.zeros(5), torch.full((5,), .27)
+    cost = tracker.step(contact, nonflat, velocity, height)['gait_terrain_support']
+    assert torch.allclose(cost, torch.tensor([-.4, -.2, 0., .2, .2]))
+    assert not tracker.step(contact, ~nonflat, velocity, height)['gait_terrain_support'].any()
+    assert not tracker.step(contact, nonflat, velocity, height, active=nonflat)['gait_terrain_support'].any()
     good_report = dict(report, partial_evaluation=False, unique_layouts=20, success_rate=1., vx_rmse=.03)
     stopped = dict(good_report, success_rate=0., vx_rmse=.3)
     repair = dict(good_report, gait=dict(report['gait'], all_max_flight=.1))

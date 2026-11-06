@@ -51,6 +51,7 @@ def main():
     parser.add_argument('--target-action-std', type=float)
     parser.add_argument('--long-flight-penalty', type=float)
     parser.add_argument('--flight-penalty', type=float)
+    parser.add_argument('--terrain-support-reward', type=float, help='复杂地形落足重叠系数，0保留原奖励')
     parser.add_argument('--training-levels', type=int, nargs='+')
     args = parser.parse_args()
     if args.proprio_only and args.stage != 'student_ppo':
@@ -77,6 +78,8 @@ def main():
         config.gait.long_flight = args.long_flight_penalty
     if args.flight_penalty is not None:
         config.gait.flight = args.flight_penalty
+    if args.terrain_support_reward is not None:
+        config.gait.terrain_support = args.terrain_support_reward
     if args.flat or args.complex:
         config.terrain.obstacles = not args.flat
     for name in ['step_height_min', 'step_height_max', 'levels', 'layouts']:
