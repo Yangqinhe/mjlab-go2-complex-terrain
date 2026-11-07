@@ -1010,3 +1010,11 @@ README开头将195明确标为历史路线/接触验收，保留240/240历史结
 - train_student_multitask.py仅增加日志字段route_max_level、route_max_level_episodes/successes/falls，按reset前实际地形等级统计最高训练档位，避免将低台阶成功误称为15cm进展。未修改训练动作、奖励、采样或验收；原文件备份 outputs/nominal_gait_goal_audits/source_train_student_multitask_before_level_logging.py。
 - 16环境8次实际GPU运行检查记录最高level12的3回合3跌倒，而全部路线4回合，证明高低档计数分开；数值异常0。检查使用actor_lr=0，actor权重逐张量不变（除初始化log_std），该检查权重不采用。证据 highest_level_logging_smoke_verification.json，后续主训练新批次自动加载新增日志。
 - 域随机化关闭，原权重和全部outputs保留，完整正确步态goal未完成。
+
+
+## 2026-11-08：15cm第二批50次完成，上段楼梯失败视频已实际检查
+
+- 第二批1645→1695完整50次PPO保存，无数值异常；视觉、本体和速度网络逐张量冻结核对通过，随机化关闭。最高level12即15cm的实际训练采样785回合中成功26回合，不能用这组带动作噪声的训练计数替代确定性20路线验收；当前开始检查1695及1670中途候选。
+- 1645、seed54000、world0/layout0的15cm诊断视频14.44秒失败，已实际检查6个RGB时刻与50Hz接触/落脚CSV。机器人先爬上部分台阶，在上段推进停滞后仰退回，local_x最高3.8605、结束3.5993，末端vx为−0.3571m/s；最后约1秒前脚同时无支撑占43.4%。终止时相对高度0.4095m高于最低0.13m且无数值异常，结合终止条件指向姿态倾斜超限，不能仅归因于入阶抬脚不足。
+- 该视频只用于中间失败诊断，analysis.json明确approved=False，不替代最终同权重的正常接触/落脚视频审看。素材 outputs/nominal_gait_goal_audits/level15_ppo1645_entry_diagnostic.* 全部保留。因本批已出现新高度训练完成回合，先按原配置完成固定路线复核，不据单条视频立即修改奖励。
+- 证据 level15_visual300_second_batch_verification.json；完整goal仍未通过，未开启域随机化，未发布最终模型。
