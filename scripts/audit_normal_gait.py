@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import torch
 
-from env.gait import gait_passed, summarize_gait
+from env.gait import gait_passed, summarize_gait, MAX_STANCE_POINT_SPEED
 from env.perception.runtime import VisualRuntime
 from env.posture import foot_positions_body, foot_velocities_world
 from env.training_task import Go2Task
@@ -100,11 +100,11 @@ def main():
     mean_width=widths.mean(0);p95_width=widths.quantile(.95,dim=0)
     pose_pass=bool(((mean_width>=.244)&(mean_width<=.324)&(p95_width<=.344)).all() and (hip_p95<=.25).all())
     feet_pass=all(r['touchdowns']>=4*len(args.seeds) and r['inside_fraction']>=.95
-                  and .3<=r['duty_factor']<=.8 and r['stance_slip_p95_m_s']<=.15 for r in foot_reports)
+                  and .3<=r['duty_factor']<=.8 and r['stance_slip_p95_m_s']<=MAX_STANCE_POINT_SPEED for r in foot_reports)
     contact_pass=gait_passed(dict(gait=gait))
     error=(float(((mean_width-.324).clamp(min=0)+(.244-mean_width).clamp(min=0)).sum()/.04)
            +float((p95_width-.344).clamp(min=0).sum()/.04)+float((hip_p95-.25).clamp(min=0).sum()/.15)
-           +sum(max(0.,.95-r['inside_fraction'])*10+max(0.,r['stance_slip_p95_m_s']-.15)*10
+           +sum(max(0.,.95-r['inside_fraction'])*10+max(0.,r['stance_slip_p95_m_s']-MAX_STANCE_POINT_SPEED)*10
                  +int(r['touchdowns']<4*len(args.seeds)) for r in foot_reports)+10*crossing)
     report=dict(checkpoint=str(Path(args.checkpoint).resolve()),iteration=saved['iteration'],seeds=args.seeds,
         slip_measurement='平地球形足底接触点速度近似；不是接触求解器直接测量值',
