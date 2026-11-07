@@ -182,6 +182,7 @@ def main():
                   arguments=vars(args),numerical_failures=0,
                   source_stage=saved['stage'],source_stage_iteration=saved['iteration'],ppo_start_iteration=start,
                   normal_gait_reward_revision='stance_speed_tail_v3',
+                  terrain_contact_reward_revision=('low_support_deficit_v1' if route_cfg.gait.terrain_support else 'off'),
                   reference_target_revision=('geometry_transition_v2' if args.terrain_reference_transition else 'geometry_v2'),
                   terrain_reference=args.terrain_reference,
                   normal_reference_visual_shared=share_normal_visual,
@@ -219,7 +220,7 @@ def main():
                              torch.full((args.free_envs,1),args.free_std_scale,device='cuda:0')])
         begin=time.monotonic()
         for iteration in range(start+1,start+args.iterations+1):
-            sums=[dict(reward=0.,episodes=0,successes=0,falls=0,width_reward=0.,slip_reward=0.,touchdown_velocity_reward=0.,stance_speed_reward=0.,terrain_reference_fraction=0.,reference_transition_fraction=0.) for _ in tasks]
+            sums=[dict(reward=0.,episodes=0,successes=0,falls=0,width_reward=0.,slip_reward=0.,touchdown_velocity_reward=0.,stance_speed_reward=0.,support_deficit_reward=0.,terrain_reference_fraction=0.,reference_transition_fraction=0.) for _ in tasks]
             for _ in range(args.horizon):
                 with torch.no_grad():
                     states=[];critics=[]
@@ -291,6 +292,8 @@ def main():
                             if touchdown_reward is not None:sums[index]['touchdown_velocity_reward']+=touchdown_reward.mean().item()
                             stance_speed_reward=info['terms'].get('normal_stance_speed')
                             if stance_speed_reward is not None:sums[index]['stance_speed_reward']+=stance_speed_reward.mean().item()
+                            support_deficit=info['terms'].get('gait_terrain_deficit')
+                            if support_deficit is not None:sums[index]['support_deficit_reward']+=support_deficit.mean().item()
                         ids=done.nonzero(as_tuple=False).flatten()
                         if len(ids):
                             sums[index]['episodes']+=len(ids)
@@ -316,6 +319,7 @@ def main():
                     row[name+'_slip_reward']=sums[index]['slip_reward']/args.horizon
                     row[name+'_touchdown_velocity_reward']=sums[index]['touchdown_velocity_reward']/args.horizon
                     row[name+'_stance_speed_reward']=sums[index]['stance_speed_reward']/args.horizon
+                    row[name+'_support_deficit_reward']=sums[index]['support_deficit_reward']/args.horizon
             if terrain_reference is not None:
                 row['terrain_reference_fraction']=sums[0]['terrain_reference_fraction']/args.horizon
                 if args.terrain_reference_transition:

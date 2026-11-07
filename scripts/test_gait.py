@@ -54,12 +54,18 @@ def main():
     nonflat, velocity, height = torch.zeros(5, dtype=torch.bool), torch.zeros(5), torch.full((5,), .27)
     cost = tracker.step(contact, nonflat, velocity, height)['gait_terrain_support']
     assert torch.allclose(cost, torch.tensor([-.4, -.2, 0., .2, .2]))
+    deficit=tracker.step(contact, nonflat, velocity, height)['gait_terrain_deficit']
+    assert torch.equal(deficit, torch.tensor([-4., -2., 0., 0., 0.]))
+    assert not tracker.step(contact, ~nonflat, velocity, height)['gait_terrain_deficit'].any()
+    assert not tracker.step(contact, nonflat, velocity, height, active=nonflat)['gait_terrain_deficit'].any()
     assert not tracker.step(contact, ~nonflat, velocity, height)['gait_terrain_support'].any()
     assert not tracker.step(contact, nonflat, velocity, height, active=nonflat)['gait_terrain_support'].any()
     # 额外区域掩码不改变接触/腾空统计，只限定训练奖励；初始化仍不计费。
     subset = torch.tensor([True, False, True, True, False])
     scoped = tracker.step(contact, nonflat, velocity, height, support_mask=subset)['gait_terrain_support']
     assert torch.allclose(scoped, cost*subset)
+    scoped_deficit=tracker.step(contact, nonflat, velocity, height, support_mask=subset)['gait_terrain_deficit']
+    assert torch.equal(scoped_deficit,deficit*subset)
     assert not tracker.step(contact, nonflat, velocity, height,
                             active=nonflat, support_mask=subset)['gait_terrain_support'].any()
     good_report = dict(report, partial_evaluation=False, unique_layouts=20, success_rate=1., vx_rmse=.03)

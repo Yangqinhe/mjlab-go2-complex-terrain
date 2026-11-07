@@ -82,6 +82,8 @@ class GaitTracker:
             # 默认仍作用于所有非平地；任务可将重叠约束限制在下楼梯过渡。
             terrain = ~flat if support_mask is None else support_mask
             terms['gait_terrain_support'] = cfg.terrain_support*(active & terrain)*(count-2).clamp(-2, 1)
+            # 在完全腾空前惩罚0/1足支撑，不增加3/4足奖励，避免鼓励拖脚。
+            terms['gait_terrain_deficit'] = cfg.low_support*(active & terrain)*(2-count).clamp(min=0)
         return terms
 
     def snapshot(self, index):

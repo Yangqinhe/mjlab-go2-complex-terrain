@@ -113,6 +113,7 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                         foot_xyz=foot_positions_body(task)[video_env_index].cpu().tolist()
                         gait_trace.append(dict(seed=terrain_seed, world_index=video_env_index,
                             layout=int(terrain.terrain_types[video_env_index]), seconds=(step+1)*task.dt,
+                            local_x=local_x[video_env_index].item(),
                             **dict(zip(('FL', 'FR', 'RL', 'RR'), map(int, contacts))),
                             height=info['height'][video_env_index].item(),
                             **{f'{leg}_{axis}_body':foot_xyz[i][j] for i,leg in enumerate(('FL','FR','RL','RR'))
