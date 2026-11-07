@@ -769,3 +769,12 @@ PPO1045（134413_student_ppo_seed85015）3cm为4/4、RMSE0.0688；9cm为3/4、�
 完整保存第21批后，将已复核PPO1070快照纳入最佳候选池；原参考945保持不变。恢复后必须继续评估第21批，而不是跳过已完成训练。external_candidate_selections记录原始报告、同一评分公式、原最佳和权重SHA，不将该候选标记为最终passed。中途完整路线报告round19_mid_route0_report.json、round19_mid_route6_report.json，选用依据round19_mid_adoption.json；快照仍在snapshots/round19_update25.pt。随后第21批正式复核得分128.0837，优于快照99.3607，最终被选作第22批实际初始化（已核对metadata.parent）。第21批3cm/9cm均4/4完成，9cm vx RMSE0.09725、最大腾空0.06s，路线门槛通过；正常平地error0.00939，仍有支撑速度略超门槛，passed=false，尚不升档。最初按快照推测第22批来源的描述已据实际运行纠正，采用记录区分候选池起点与最终所选权重。
 
 标称训练现在每25次更新保留不可覆盖的iteration_*.pt，控制器按原筛查逐个比较这些快照与final，按SHA排除与final相同的副本，记录candidate_screens。最终完整验收不变。16环境2次更新冒烟通过，保存iteration_1072.pt且SHA与final相同，验证去重依据；语法检查通过。代码/状态备份在resume_history/20261107_144325_interval_selection，恢复日志interval_selection_resume.log。仍在9cm课程，域随机化关闭、goal active，未通过更高楼梯和最终视频验收。
+
+
+## 2026-11-07：用既有五seed固定选择集筛查，避免单次4/4误判稳定性
+
+第22批最终权重正常平地passed，RL足底速度P95降至0.1330m/s；但9cm仅3/4，未替换最佳。第23批最终和中途均未改善综合评分。对当前最佳第21批补测原固定选择集54000～54004，9cm仅12/20完成、vx RMSE0.1373，最大腾空0.06s。八个失败中大多发生在上楼，不能用seed54000一次4/4宣称稳定。原始报告保留，摘要round21_selection20_summary.json。
+
+新增集中配置nominal_screen_seeds，当前显式设置54000～54004，标称筛查每个所需高度覆盖20条路线；原独立fresh验收集保持未使用，最终六档固定120+fresh120标准不变。默认仍为单seed以兼容已有控制任务，当前goal恢复配置明确启用五seed。旧评分无法与新范围直接比较，因此归档后清空best_screen、重测当前最佳基线，随后按同一范围评估候选。没有把失败数据丢弃或放宽任何单项门槛。
+
+第24批训练已完整保存，pending_run接回复核；代码与切换前状态位于resume_history/20261107_152336_multiseed_selection，原initial及第24批控制侧产物在恢复历史另存。恢复日志multiseed_selection_resume.log，实际子进程命令已确认包含五个seed。语法检查通过，此次只调整选模覆盖范围，训练任务/奖励/模型接口未改变，域随机化仍关闭。完整goal尚未达到。

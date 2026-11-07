@@ -30,6 +30,7 @@ def main():
     parser.add_argument('--reference-checkpoint',default=str(REFERENCE))
     parser.add_argument('--flat-gait-first',action='store_true')
     parser.add_argument('--nominal-max-level',type=int,choices=(0,6,9,12,15,17),default=17)
+    parser.add_argument('--nominal-screen-seeds',type=int,nargs='+',default=[54000])
     parser.add_argument('--flat-anchor-coef',type=float,default=20.)
     parser.add_argument('--nominal-actor-lr',type=float,default=5e-6)
     parser.add_argument('--nominal-anchor-coef',type=float,default=2.)
@@ -60,7 +61,7 @@ def main():
         args.flat_gait_first=recovered.get('nominal_substage')=='flat'
         args.require_normal_gait=recovered.get('require_normal_gait',False)
         for key,value in recovered.get('controller_config',{}).items():
-            if key in ('updates_per_round','nominal_actor_lr','nominal_anchor_coef','flat_anchor_coef','route_envs','free_envs','nominal_max_level'):
+            if key in ('updates_per_round','nominal_actor_lr','nominal_anchor_coef','flat_anchor_coef','route_envs','free_envs','nominal_max_level','nominal_screen_seeds'):
                 setattr(args,key,value)
         args.reference_checkpoint=recovered['reference']
         args.visual_source=recovered['visual_source']
@@ -119,7 +120,7 @@ def main():
                    phase='nominal_gait' if args.nominal_gait_first else 'training',
                    nominal_substage='flat' if args.flat_gait_first else 'complex',
                    controller_config={key:getattr(args,key) for key in ('updates_per_round','nominal_actor_lr',
-                       'nominal_anchor_coef','flat_anchor_coef','route_envs','free_envs','nominal_max_level')},
+                       'nominal_anchor_coef','flat_anchor_coef','route_envs','free_envs','nominal_max_level','nominal_screen_seeds')},
                    visual_source=args.visual_source,folder=str(folder),records=[],
                    goal=('先在标称环境纠正四足接触与落脚；数值和视频复核均通过后再训练域随机化' if args.nominal_gait_first
                          else '完整域随机化下六档固定120+独立120路线全完成、速度/60ms步态通过，33项变速停车及20/35/50度边界通过'))
@@ -186,7 +187,8 @@ def main():
         reports=[];paths=[]
         screen_levels=sorted({0,args.nominal_max_level}) if args.nominal_gait_first else (0,17)
         for level in screen_levels:
-            path,report=evaluate_route(ckpt,level,[54000],label+f'_route{level}',route_config=route_config)
+            selection_seeds=args.nominal_screen_seeds if args.nominal_gait_first else [54000]
+            path,report=evaluate_route(ckpt,level,selection_seeds,label+f'_route{level}',route_config=route_config)
             reports.append(report);paths.append(str(path))
         if args.nominal_gait_first:
             command=dict(pass_rate=None,records=[])
@@ -200,7 +202,7 @@ def main():
         if not gait_safe:score-=1000.
         stance=stance_check(ckpt,label) if (args.front_posture_finetune or args.require_normal_gait) else dict(passed=True,error=0.)
         score-=30*stance['error']
-        return dict(score=score,front_stance=stance,gait_safe=gait_safe,route_min_success=min(r['success_rate'] for r in reports),
+        return dict(score=score,selection_seeds=selection_seeds,front_stance=stance,gait_safe=gait_safe,route_min_success=min(r['success_rate'] for r in reports),
                     route_pass=all(route_pass(r) for r in reports),command_pass_rate=command['pass_rate'],
                     stop_passes=sum(r['passed'] for r in stop),reports=paths,
                     passed=all(route_pass(r) for r in reports) and (args.nominal_gait_first or command['pass_rate']==1.) and stance['passed'])
