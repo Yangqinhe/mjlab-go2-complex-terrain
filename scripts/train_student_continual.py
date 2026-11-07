@@ -35,6 +35,7 @@ def main():
     parser.add_argument('--nominal-actor-lr',type=float,default=5e-6)
     parser.add_argument('--nominal-anchor-coef',type=float,default=2.)
     parser.add_argument('--nominal-terrain-reference')
+    parser.add_argument('--nominal-continuous-updates',action='store_true',help='标称训练分支累计更新，最佳验收权重单独保留')
     parser.add_argument('--nominal-gait-first',action='store_true',help='先关闭随机化纠正四足步态，数值和视频复核通过才开放随机化')
     parser.add_argument('--require-normal-gait',action='store_true')
     parser.add_argument('--resume-controller',type=Path,help='恢复控制目录，保留选模与课程，并优先评估已完成的训练批次')
@@ -62,7 +63,7 @@ def main():
         args.flat_gait_first=recovered.get('nominal_substage')=='flat'
         args.require_normal_gait=recovered.get('require_normal_gait',False)
         for key,value in recovered.get('controller_config',{}).items():
-            if key in ('updates_per_round','nominal_actor_lr','nominal_anchor_coef','flat_anchor_coef','route_envs','free_envs','nominal_max_level','nominal_screen_seeds','nominal_terrain_reference'):
+            if key in ('updates_per_round','nominal_actor_lr','nominal_anchor_coef','flat_anchor_coef','route_envs','free_envs','nominal_max_level','nominal_screen_seeds','nominal_terrain_reference','nominal_continuous_updates'):
                 setattr(args,key,value)
         args.reference_checkpoint=recovered['reference']
         args.visual_source=recovered['visual_source']
@@ -121,7 +122,7 @@ def main():
                    phase='nominal_gait' if args.nominal_gait_first else 'training',
                    nominal_substage='flat' if args.flat_gait_first else 'complex',
                    controller_config={key:getattr(args,key) for key in ('updates_per_round','nominal_actor_lr',
-                       'nominal_anchor_coef','flat_anchor_coef','route_envs','free_envs','nominal_max_level','nominal_screen_seeds','nominal_terrain_reference')},
+                       'nominal_anchor_coef','flat_anchor_coef','route_envs','free_envs','nominal_max_level','nominal_screen_seeds','nominal_terrain_reference','nominal_continuous_updates')},
                    visual_source=args.visual_source,folder=str(folder),records=[],
                    goal=('先在标称环境纠正四足接触与落脚；数值和视频复核均通过后再训练域随机化' if args.nominal_gait_first
                          else '完整域随机化下六档固定120+独立120路线全完成、速度/60ms步态通过，33项变速停车及20/35/50度边界通过'))
@@ -259,6 +260,7 @@ def main():
         return dict(passed=True,reports=paths,height_evaluations=fresh,commands=str(path),front_stance=stance)
 
     strength=state['strength'];best=str(checkpoint);best_screen=state.get('best_screen') if recovered else None
+    training_checkpoint=state.get('training_checkpoint',best)
     anchor=.2 if args.front_posture_finetune else 20.
     lr=2e-6 if args.front_posture_finetune else 5e-6
     stale=0;stop_fraction=.25;freeze=True
@@ -292,6 +294,7 @@ def main():
                 previous_level=args.nominal_max_level
                 args.nominal_max_level=next(level for level in (0,6,9,12,15,17) if level>previous_level)
                 state['controller_config']['nominal_max_level']=args.nominal_max_level
+                training_checkpoint=best;state['training_checkpoint']=best
                 state.setdefault('terrain_baseline_advances',[]).append(dict(checkpoint=best,
                     passed_level=previous_level,next_level=args.nominal_max_level,screen=best_screen))
                 next_route,next_free=configured_tasks(strength,route_envs,free_envs,85000+state['round'])
@@ -324,7 +327,8 @@ def main():
                     screen=visual_result,selected=visual_accepted,teacher=str(teacher),teacher_frozen=True))
                 if visual_accepted:best=visual_ckpt;best_screen=visual_result
                 save_json(folder/'status.json',state)
-            arguments=['--resume',best,'--reference',reference_path,'--visual',args.visual_source,
+            resume_checkpoint=training_checkpoint if (args.nominal_gait_first and args.nominal_continuous_updates) else best
+            arguments=['--resume',resume_checkpoint,'--reference',reference_path,'--visual',args.visual_source,
                        '--iterations',args.updates_per_round,'--route-envs',route_envs,'--free-envs',free_envs,
                        '--strength',strength,'--anchor-coef',anchor,'--actor-lr',lr,
                        '--std',.02 if args.front_posture_finetune else .04,'--stop-script-fraction',stop_fraction,'--seed',85000+round_id]
@@ -349,6 +353,7 @@ def main():
                 metadata=json.loads((run_dir/'metadata.json').read_text())
                 if metadata['numerical_failures']:
                     # 单批异常必须拒绝，但不应中止整个续训；从上一已评估权重重新采样。
+                    training_checkpoint=best;state['training_checkpoint']=best
                     rejection=dict(round=round_id,strength=strength,checkpoint=candidate,selected=False,
                         screen=dict(passed=False,reason='numerical_failure',reports=[],
                                     numerical_failures=metadata['numerical_failures']))
@@ -388,6 +393,13 @@ def main():
                         selected=accepted,anchor=metadata['arguments']['anchor_coef'],
                         actor_lr=metadata['arguments']['actor_lr'],freeze_proprio=metadata['arguments']['freeze_proprio'],
                         terrain_reference=metadata.get('terrain_reference'),candidate_screens=candidate_screens)
+            if args.nominal_gait_first and args.nominal_continuous_updates:
+                # 保留学习分支的累计更新；验收最佳不受影响。失败分支不直接发布。
+                eligible=[trial for trial in candidate_screens if trial['screen']['front_stance']['passed']
+                    and (trial['screen']['route_min_success'] is None or trial['screen']['route_min_success']>0)]
+                if eligible:training_checkpoint=eligible[0]['checkpoint']
+                state['training_checkpoint']=training_checkpoint
+                record['next_training_checkpoint']=training_checkpoint
             state['records'].append(record)
             state.pop('pending_run',None)
             if accepted:
@@ -399,6 +411,7 @@ def main():
                 previous_level=args.nominal_max_level
                 args.nominal_max_level=next(level for level in (0,6,9,12,15,17) if level>previous_level)
                 state['controller_config']['nominal_max_level']=args.nominal_max_level
+                training_checkpoint=best;state['training_checkpoint']=best
                 record['terrain_curriculum']=dict(passed_level=previous_level,next_level=args.nominal_max_level)
                 best_screen=screen(best,free_cfg,label+'_next_terrain_baseline',route_config=route_cfg)
                 stale=0
@@ -413,6 +426,7 @@ def main():
                     if args.flat_gait_first:
                         # 平地只是中间课程。仍关闭随机化，回到完整标称复杂地形并重新测基线。
                         state['flat_gait_validation']=dict(checkpoint=best,validation=validation)
+                        training_checkpoint=best;state['training_checkpoint']=best
                         args.flat_gait_first=False
                         reference_path=Path(best);ref=torch.load(best,map_location='cpu',weights_only=False)
                         source=env_from_dict(ref['env_config']);anchor=args.nominal_anchor_coef;stale=0
