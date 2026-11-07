@@ -168,6 +168,10 @@ def main():
         from env.posture import configure_normal_gait
         scale=args.normal_foot_scale or args.front_posture_scale
         for cfg in (route_cfg,free_cfg):configure_normal_gait(cfg,scale)
+    start=saved['iteration'];total=saved.get('total_steps',0)
+    if saved['stage']=='distill' and 'source_ppo_iteration' in saved:
+        # 视觉监督编号独立于PPO；交接元数据保留最近一次共享控制网络的PPO计数。
+        start=saved['source_ppo_iteration'];total=saved['source_ppo_total_steps']
     folder=new_run('student_ppo',route_cfg,training)
     save_json(folder/'task_configs.json',dict(route=asdict(route_cfg),free=asdict(free_cfg),strength=args.strength))
     metadata=dict(status='running',parent=args.resume or args.reference,reference=args.reference,
@@ -176,6 +180,7 @@ def main():
                   initialization='195 common + D435i visual' if not args.resume else 'multitask continuation',
                   route_envs=args.route_envs,free_envs=args.free_envs,strength=args.strength,
                   arguments=vars(args),numerical_failures=0,
+                  source_stage=saved['stage'],source_stage_iteration=saved['iteration'],ppo_start_iteration=start,
                   normal_gait_reward_revision='stance_speed_tail_v3',
                   reference_target_revision=('geometry_transition_v2' if args.terrain_reference_transition else 'geometry_v2'),
                   terrain_reference=args.terrain_reference,
@@ -210,7 +215,6 @@ def main():
         torch.manual_seed(args.seed)
         deployment=deployment_config(route);deployment['proprio_only']=False
         save_json(folder/'deployment.json',deployment)
-        start=saved['iteration'];total=saved.get('total_steps',0)
         std_scale=torch.cat([torch.full((args.route_envs,1),args.route_std_scale,device='cuda:0'),
                              torch.full((args.free_envs,1),args.free_std_scale,device='cuda:0')])
         begin=time.monotonic()
