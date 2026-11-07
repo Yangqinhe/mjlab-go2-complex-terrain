@@ -357,7 +357,20 @@ def main():
                     continue
                 state['consecutive_numerical_rejections']=0
                 cfg=env_from_dict(json.loads((run_dir/'task_configs.json').read_text())['free'])
-                result=screen(candidate,cfg,label,route_config=route_cfg)
+                # 同时检查保存的中途权重，避免仅凭最后一次更新丢掉更好的正常步态。
+                candidates=[Path(candidate)]
+                if args.nominal_gait_first:
+                    candidates+=sorted((run_dir/'checkpoints').glob('iteration_*.pt'))
+                seen=set();candidate_screens=[]
+                for path in candidates:
+                    checksum=hashlib.sha256(path.read_bytes()).hexdigest()
+                    if checksum in seen:continue
+                    seen.add(checksum)
+                    trial_label=label if str(path)==candidate else label+'_'+path.stem
+                    trial=screen(str(path),cfg,trial_label,route_config=route_cfg)
+                    candidate_screens.append(dict(checkpoint=str(path),sha256=checksum,screen=trial))
+                selected=max(candidate_screens,key=lambda item:item['screen']['score'])
+                candidate=selected['checkpoint'];result=selected['screen']
                 errors=0
             except subprocess.CalledProcessError as error:
                 errors+=1;lr=max(1e-6,lr/2)
@@ -367,7 +380,7 @@ def main():
                 continue
             accepted=result['score']>best_screen['score']
             record=dict(round=round_id,strength=strength,checkpoint=candidate,screen=result,
-                        selected=accepted,anchor=anchor,actor_lr=lr,freeze_proprio=freeze)
+                        selected=accepted,anchor=anchor,actor_lr=lr,freeze_proprio=freeze,candidate_screens=candidate_screens)
             state['records'].append(record)
             state.pop('pending_run',None)
             if accepted:

@@ -760,3 +760,12 @@ PPO1045（134413_student_ppo_seed85015）3cm为4/4、RMSE0.0688；9cm为3/4、�
 在已有正常平地奖励中增加normal_stance_speed：只针对支撑脚的足底速度超0.15m/s部分，使用relu(||v_xy||²/0.15²-1)²，乘已有foot_landing权重。低于阈值成本为0；仅平地直行、回合0.5s后启用，不约束楼梯或明显转向，不裁剪动作，不修改任何验收门槛。针对首次触地后的后续40ms超速，而不是仅重复首次触地成本。增加该项训练日志，metadata明确stance_speed_tail_v3；默认正常步态权重为0时原任务保持原行为。
 
 修改前env/posture.py、训练脚本和状态保存在113532控制目录resume_history/20261107_141640_stance_speed_tail。16环境、两次真实PPO更新通过，数值异常0，新成本实际触发且奖励/损失有限；这不证明训练成功。完成的第18批原权重和输出完整保留，父控制器恢复后复核该批，下一个训练子进程使用新成本。切换证据stance_speed_tail_switch.json及stance_speed_tail_smoke.log。仍保持strength=0，goal active，正常步态、复杂地形及最终视频均须联合通过。
+
+
+## 2026-11-07：保存并比较中途权重，采用已复核的PPO1070续训
+
+第19批25次更新快照PPO1070正常平地passed，vx RMSE0.0733，FL足底速度P95降至0.1488m/s，其余三脚亦通过；3cm路线4/4、RMSE0.0683、无腾空；9cm3/4、RMSE0.1207、最大腾空0.06s，接触通过，但路线未通过。该快照按原nominal screen公式得99.3607，优于此前最佳第20批88.6021。第19批最终权重虽平地FL降到0.103，却在9cm出现跌倒、最大腾空0.40s，未被选择。故仅看最后权重可能错过更好的联合候选。
+
+完整保存第21批后，从实际已复核的PPO1070快照接续；原参考945保持不变。external_candidate_selections记录原始报告、同一评分公式、原最佳和权重SHA，不将该候选标记为最终passed。中途完整路线报告round19_mid_route0_report.json、round19_mid_route6_report.json，选用依据round19_mid_adoption.json；快照仍在snapshots/round19_update25.pt。当前第22批实际从该快照开始。
+
+标称训练现在每25次更新保留不可覆盖的iteration_*.pt，控制器按原筛查逐个比较这些快照与final，按SHA排除与final相同的副本，记录candidate_screens。最终完整验收不变。16环境2次更新冒烟通过，保存iteration_1072.pt且SHA与final相同，验证去重依据；语法检查通过。代码/状态备份在resume_history/20261107_144325_interval_selection，恢复日志interval_selection_resume.log。仍在9cm课程，域随机化关闭、goal active，未通过更高楼梯和最终视频验收。

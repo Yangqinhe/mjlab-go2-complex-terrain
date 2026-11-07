@@ -5,6 +5,7 @@ from copy import deepcopy
 from dataclasses import asdict
 import hashlib
 import json
+import shutil
 from pathlib import Path
 import time
 
@@ -268,8 +269,9 @@ def main():
                     exploration_std_scales=dict(route=args.route_std_scale,free=args.free_std_scale),
                     critic_free_task_marker=args.critic_task_marker,
                     randomization_strength=args.strength)
+                if args.nominal_gait:
+                    shutil.copyfile(folder/'checkpoints/latest.pt',folder/f'checkpoints/iteration_{iteration}.pt')
                 if iteration==start+args.iterations:
-                    import shutil
                     shutil.copyfile(folder/'checkpoints/latest.pt',folder/'checkpoints/final.pt')
             metadata.update(iteration=iteration,numerical_failures=row['numerical_failures'])
             if (iteration-start)%10==0:save_json(folder/'metadata.json',metadata)
