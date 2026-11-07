@@ -38,6 +38,7 @@ def main():
     parser.add_argument('--nominal-anchor-coef',type=float,default=2.)
     parser.add_argument('--nominal-terrain-reference')
     parser.add_argument('--nominal-reference-transition',type=float,default=0.)
+    parser.add_argument('--nominal-max-vx-rmse',type=float,default=.1)
     parser.add_argument('--nominal-continuous-updates',action='store_true',help='标称训练分支累计更新，最佳验收权重单独保留')
     parser.add_argument('--nominal-gait-first',action='store_true',help='先关闭随机化纠正四足步态，数值和视频复核通过才开放随机化')
     parser.add_argument('--require-normal-gait',action='store_true')
@@ -66,7 +67,7 @@ def main():
         args.flat_gait_first=recovered.get('nominal_substage')=='flat'
         args.require_normal_gait=recovered.get('require_normal_gait',False)
         for key,value in recovered.get('controller_config',{}).items():
-            if key in ('updates_per_round','nominal_actor_lr','nominal_anchor_coef','flat_anchor_coef','route_envs','free_envs','nominal_max_level','nominal_screen_seeds','nominal_terrain_reference','nominal_continuous_updates','nominal_route_std_scale','nominal_free_std_scale','nominal_reference_transition'):
+            if key in ('updates_per_round','nominal_actor_lr','nominal_anchor_coef','flat_anchor_coef','route_envs','free_envs','nominal_max_level','nominal_screen_seeds','nominal_terrain_reference','nominal_continuous_updates','nominal_route_std_scale','nominal_free_std_scale','nominal_reference_transition','nominal_max_vx_rmse'):
                 setattr(args,key,value)
         args.reference_checkpoint=recovered['reference']
         args.visual_source=recovered['visual_source']
@@ -125,7 +126,7 @@ def main():
                    phase='nominal_gait' if args.nominal_gait_first else 'training',
                    nominal_substage='flat' if args.flat_gait_first else 'complex',
                    controller_config={key:getattr(args,key) for key in ('updates_per_round','nominal_actor_lr',
-                       'nominal_anchor_coef','flat_anchor_coef','route_envs','free_envs','nominal_max_level','nominal_screen_seeds','nominal_terrain_reference','nominal_continuous_updates','nominal_route_std_scale','nominal_free_std_scale','nominal_reference_transition')},
+                       'nominal_anchor_coef','flat_anchor_coef','route_envs','free_envs','nominal_max_level','nominal_screen_seeds','nominal_terrain_reference','nominal_continuous_updates','nominal_route_std_scale','nominal_free_std_scale','nominal_reference_transition','nominal_max_vx_rmse')},
                    visual_source=args.visual_source,folder=str(folder),records=[],
                    goal=('先在标称环境纠正四足接触与落脚；数值和视频复核均通过后再训练域随机化' if args.nominal_gait_first
                          else '完整域随机化下六档固定120+独立120路线全完成、速度/60ms步态通过，33项变速停车及20/35/50度边界通过'))
@@ -159,7 +160,7 @@ def main():
         return output,json.loads(output.read_text())
 
     def route_pass(report):
-        return (report['success_rate']==1. and report['vx_rmse']<=.1 and gait_passed(report)
+        return (report['success_rate']==1. and report['vx_rmse']<=(args.nominal_max_vx_rmse if args.nominal_gait_first else .1) and gait_passed(report)
                 and not report['partial_evaluation'] and report['numerical_failure_rate']==0.)
 
     def stance_check(ckpt,label,seed=56200,seeds=None):

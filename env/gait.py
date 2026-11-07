@@ -4,7 +4,7 @@ import torch
 
 
 # 用户允许短暂换足腾空至60ms；这是验收上限，与训练奖励宽限独立。
-MAX_FLIGHT_SECONDS = .06
+MAX_FLIGHT_SECONDS = .08  # 用户确认接受80ms换足腾空；腾空占比及其他门槛不变。
 MAX_STANCE_POINT_SPEED = .15  # 平地足底接触点估计切向速度上限，m/s。
 
 
