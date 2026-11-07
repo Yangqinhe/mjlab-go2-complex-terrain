@@ -264,6 +264,7 @@ def main():
     if recovered:
         anchor=state.get('next_anchor',anchor);lr=state.get('next_lr',lr)
         for record in reversed(state['records']):
+            if record.get('invalid_environment'):continue
             if record['selected']:break
             stale+=1
         stop_fraction=state.get('next_stop_fraction',stop_fraction)

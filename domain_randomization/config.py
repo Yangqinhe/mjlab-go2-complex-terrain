@@ -43,6 +43,8 @@ def d435i_scene_config(source):
     config.route.enabled=True;config.episode_seconds=90.
     config.terrain.obstacles=True;config.terrain.levels=18
     config.terrain.width=3.;config.terrain.flat_length=3.;config.terrain.spawn_x=1.
+    # 平地20m场景的12～16m通道不能继承到3m地形，否则墙体侵入相邻路线。
+    config.terrain.corridor_width=(1.2,2.4)
     config.terrain.surroundings=True;config.terrain.layouts=4
     config.randomization.enabled=True
     config.randomization.seed=82100

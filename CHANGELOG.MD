@@ -717,3 +717,14 @@
 PPO945在3cm完整路线3/4通过，未完成的layout0在起步区超时。6秒截断视频实际检查1/3/5秒，看到平地原地小幅踏步；局部距离仅0.00068m，其余三个布局约2.13m。将视觉latent置零后，同布局仍仅0.00497m，其余约2.28m，故不能直接归因于深度分支；该消融仅诊断，不能替代真实视觉策略验收。四布局reset时实际命令均vx=0.3、重力/关节等45维输入完全相同，初始姿态单位四元数、地面高度均0。尚需继续学习并复核起步行为，未认定具体动力学根因。
 
 证据：outputs/nominal_gait_goal_audits/low_stair_start_ablation.json、low_stair_initial_state.json、low_stair_start_diagnostic.mp4。视频/消融均显式partial_evaluation，不算完整路线成功。第10轮候选仍只3/4完成且正常步态未过，已拒绝；第11轮开始只混合3cm路线和正常平地，随机化关闭。
+
+
+## 2026-11-07：修复复杂路线继承宽平地通道造成的跨布局碰撞
+
+低台阶停滞已定位到环境错误：PPO945来自20m宽的平地，通道参数12～16m；d435i_scene_config恢复3m宽复杂路线时遗漏了通道参数。layout2的左墙落到layout0起点附近（世界y=-4.593），原始GPU contact显示机身/多条腿直接与course_0000_v2_scene_wall_-1接触，首个20ms即与其他布局分化。原视频按当前布局隐藏其他地形，所以单看该视频不能发现这面异列墙。不是单纯策略无法学会起步。
+
+恢复复杂路线时显式设置通道1.2～2.4m，宽平地仍12～16m。修复后该墙y=0.830，起步原始接触检查未再出现墙体接触；同权重/seed的6秒视觉诊断四布局均前进约2.13m，vx RMSE0.0684。修复后的完整3cm路线4/4完成、原接触与速度门槛通过，正常平地检查仍通过（初始综合score129.158）。此结果尚非六档/独立种子最终验收。
+
+增加针对宽平地→复杂路线的配置回归检查 scripts/test_terrain_task_restore.py，标称/随机化配置转换均通过；仅当前标称环境进行训练。控制器重启时不将invalid_environment批次计入学习停滞次数。第9～12轮受影响记录显式标记invalid_environment，原始权重、代码备份、全部报告/视频保留，不用其证明有效路线能力，也未把其结果静默改成成功。第12批完整更新已保存；从平地最佳945重新测正确环境后，第13批正常续训。
+
+备份位于113532控制目录resume_history/20261107_131809_corridor_restore；完整证据outputs/nominal_gait_goal_audits/corridor_collision_correction.json，恢复日志corrected_corridor_resume.log。仍需逐级复杂路线、六档120+120、同权重独立平地与实际完整视频复核，goal保持active且域随机化关闭。
