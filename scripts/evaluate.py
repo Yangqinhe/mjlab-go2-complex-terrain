@@ -21,7 +21,9 @@ from rl.run_io import load_policy, save_json, env_from_dict
 
 def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
              video=None, max_steps=None, route_following=None, visual_ablation='none',
-             camera_pitch=None, env_config=None):
+             camera_pitch=None, env_config=None, video_env_index=0):
+    if not 0<=video_env_index<num_envs:
+        raise ValueError('录像环境编号必须落在num_envs范围内')
     actor, original, saved = load_policy(checkpoint, device)
     if env_config:
         original=env_from_dict(json.loads(Path(env_config).read_text()))
@@ -77,7 +79,7 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                     model.vis.map.zfar = 50./model.stat.extent
                     active = f'course_{round(level/(config.terrain.levels-1)*1000):04d}'
                     if config.terrain.layouts > 1:
-                        active += f'_v{int(terrain.terrain_types[0])}'
+                        active += f'_v{int(terrain.terrain_types[video_env_index])}'
                     for i in range(model.ngeom):
                         if model.geom(i).name.startswith('course_') and not model.geom(i).name.startswith(active+'_'):
                             model.geom_group[i] = 5
@@ -104,26 +106,28 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                                    +config.terrain.spawn_x)
                         flight_local_x = torch.where(duration > flight_max, local_x, flight_local_x)
                         flight_max = torch.maximum(flight_max, duration)
-                    if writer:
-                        contacts = task.gait.previous_contact[0].cpu().tolist()
+                    recording=writer is not None and not complete[video_env_index].item()
+                    if recording:
+                        contacts = task.gait.previous_contact[video_env_index].cpu().tolist()
                         from env.posture import foot_positions_body
-                        foot_xyz=foot_positions_body(task)[0].cpu().tolist()
-                        gait_trace.append(dict(seed=terrain_seed, seconds=(step+1)*task.dt,
+                        foot_xyz=foot_positions_body(task)[video_env_index].cpu().tolist()
+                        gait_trace.append(dict(seed=terrain_seed, world_index=video_env_index,
+                            layout=int(terrain.terrain_types[video_env_index]), seconds=(step+1)*task.dt,
                             **dict(zip(('FL', 'FR', 'RL', 'RR'), map(int, contacts))),
-                            height=info['height'][0].item(),
+                            height=info['height'][video_env_index].item(),
                             **{f'{leg}_{axis}_body':foot_xyz[i][j] for i,leg in enumerate(('FL','FR','RL','RR'))
                                for j,axis in enumerate(('x','y','z'))},
-                            base_z=task.robot.data.root_link_pos_w[0, 2].item(),
-                            vx=info['velocity'][0].item()))
-                    if writer and step*task.dt+1e-9 >= next_frame:
-                        data.qpos[:] = task.env.sim.data.qpos[0].cpu().numpy()
-                        data.qvel[:] = task.env.sim.data.qvel[0].cpu().numpy()
+                            base_z=task.robot.data.root_link_pos_w[video_env_index, 2].item(),
+                            vx=info['velocity'][video_env_index].item()))
+                    if recording and step*task.dt+1e-9 >= next_frame:
+                        data.qpos[:] = task.env.sim.data.qpos[video_env_index].cpu().numpy()
+                        data.qvel[:] = task.env.sim.data.qvel[video_env_index].cpu().numpy()
                         mujoco.mj_forward(model, data)
                         camera.lookat[:] = data.qpos[:3]
                         renderer.update_scene(data, camera=camera, scene_option=option)
                         frame = renderer.render().copy()
                         if visual:
-                            depth = (visual.sensor.raw_depth[0].clamp(.15, 3)/3*255).byte().cpu().numpy()
+                            depth = (visual.sensor.raw_depth[video_env_index].clamp(.15, 3)/3*255).byte().cpu().numpy()
                             depth = np.repeat(np.repeat(depth, 15, 0), 15, 1)
                             frame = np.concatenate([frame, np.repeat(depth[:, :, None], 3, 2)], 1)
                         from PIL import Image, ImageDraw, ImageFont
@@ -131,8 +135,9 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                         draw = ImageDraw.Draw(image)
                         draw.rectangle((0, 0, frame.shape[1], 48), fill=(0, 0, 0))
                         draw.text((15, 10),
-                            f"{label} | target vx=0.30 | actual vx={info['velocity'][0].item():.3f} | "
-                            f"time={step*task.dt:.1f}s | level={level} | seed={terrain_seed}",
+                            f"{label} | target vx=0.30 | actual vx={info['velocity'][video_env_index].item():.3f} | "
+                            f"time={step*task.dt:.1f}s | level={level} | seed={terrain_seed} | "
+                            f"world={video_env_index} | layout={int(terrain.terrain_types[video_env_index])}",
                             fill=(255, 255, 255), font=ImageFont.load_default(size=24))
                         draw.text((15, 35), 'contact: '+ '  '.join(
                             f'{leg}={int(on)}' for leg, on in zip(('FL', 'FR', 'RL', 'RR'), contacts)),
@@ -144,7 +149,7 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                         done = torch.ones_like(done)
                     new = (done & ~complete).nonzero(as_tuple=False).flatten()
                     for i in new.tolist():
-                        records.append(dict(seed=terrain_seed, randomization_seed=config.randomization.seed,
+                        records.append(dict(seed=terrain_seed, world_index=i, randomization_seed=config.randomization.seed,
                             camera_pitch=(visual.sensor.pitch_degrees[i].item() if visual and config.randomization.enabled else config.camera.pitch_down_degrees),
                             layout=int(terrain.terrain_types[i]),
                             level=level, success=bool(info['success'][i]), fall=bool(info['fall'][i]),
@@ -187,6 +192,7 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                   route_following=original.route.enabled,
                   route_override=route_following,camera_pitch_override=camera_pitch,
                   env_config_override=env_config,
+                  video_world_index=video_env_index if video else None,
                   terrain_obstacles=original.terrain.obstacles,
                   stair_height=original.terrain.step_height(level/max(original.terrain.levels-1, 1))
                                if original.terrain.obstacles else 0.,
@@ -214,6 +220,7 @@ def main():
     parser.add_argument('--level', type=int, default=0)
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--video')
+    parser.add_argument('--video-env-index',type=int,default=0,help='指定录像及接触轨迹对应的并行环境编号')
     parser.add_argument('--camera-pitch',type=float)
     parser.add_argument('--env-config')
     parser.add_argument('--max-steps', type=int)
@@ -224,7 +231,7 @@ def main():
     torch.set_num_threads(1)
     report = evaluate(args.checkpoint, args.num_envs, args.seeds, args.level,
                       args.device, args.video, args.max_steps, args.route_following, args.visual_ablation,
-                      args.camera_pitch,args.env_config)
+                      args.camera_pitch,args.env_config,args.video_env_index)
     stamp = datetime.now(ZoneInfo('Asia/Hong_Kong')).strftime('%Y%m%d_%H%M%S_%f')
     folder = Path(args.checkpoint).resolve().parent.parent/'evaluations'
     folder.mkdir(exist_ok=True)
