@@ -737,3 +737,10 @@ PPO945在3cm完整路线3/4通过，未完成的layout0在起步区超时。6秒
 同一PPO945的修复后四布局筛查：9cm完成4/4、vx RMSE0.1100、接触通过但速度未通过；12cm完成1/4、RMSE0.1754；15/18/20cm均未完成，RMSE分别0.2310/0.2367/0.2671。原始完整报告保存在outputs/nominal_gait_goal_audits/corrected_height_baseline.json。每档仅一个seed的四布局，不代表最终六档验收，当前学习重点为9cm速度跟踪并保留正常平地。
 
 恢复监视器同时修复同一控制目录更换PID后误判退出的问题：每轮读取最新活动指针；不更改训练状态或验收。原监视器源码保存为outputs/nominal_gait_goal_audits/watch_student_training_before_pid_refresh.py，旧监视结果另存resume_history。语法检查通过；实际控制器已执行最佳权重升级分支并继续候选筛查，监督PID与活动指针一致。goal仍active，域随机化保持关闭。
+
+
+## 2026-11-07：第14批保持正常平地步态，接回9cm完整路线
+
+第14批PPO995候选outputs/20261107_133449_083755_student_ppo_seed85014/checkpoints/final.pt被选为续训起点：3cm/9cm固定筛查均4/4完成；3cm vx RMSE0.0716、接触通过。独立的正常平地选择检查passed，前/后平均站宽30.07/28.25cm，每脚入窗率100%，足底速度P95四脚均≤0.15m/s（FL0.1431），无腾空。但9cm vx RMSE0.1133且最大连续腾空0.08s，仍未通过该档；不得放宽用户认可的60ms门槛。第15批从该候选续训，仍使用冻结参考保留正常步态，域随机化关闭。阶段摘要outputs/nominal_gait_goal_audits/round14_nominal_progress.json包含原始报告路径。
+
+另用原945权重做9cm逐步分区域诊断（level6_tracking_regions.json）：上楼平均vx约0.267，下楼约0.362，后段约0.374m/s，存在跟踪方向相反的误差；内部速度估计亦有偏差。该自定义诊断仅3/4完成，与先前正式筛查4/4不同，不能混作同一验收；未将这种差异直接认定为确定根因。进一步说明需要固定/新seed多次完整复核，不能凭一次成功断言鲁棒。当前先等待正式候选训练和同标准筛查结果，再决定参数或估计器改动。
