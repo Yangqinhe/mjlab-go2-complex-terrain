@@ -1,7 +1,6 @@
 """冻结感知和本体编码，监督拟合平地/复杂地形参考动作，再交回PPO续训。"""
 
 import argparse
-from copy import deepcopy
 from dataclasses import asdict
 import json
 from pathlib import Path
@@ -10,6 +9,7 @@ import time
 
 import torch
 
+from env.commands import nominal_flat_training_config as flat_training_config
 from env.gait import flat_terrain_mask
 from env.perception.config import DepthConfig
 from env.perception.depth_sensor import DepthSensor
@@ -26,24 +26,6 @@ def reference_visual(task, policy, saved):
     groups=[0,4] if saved['env_config']['terrain'].get('surroundings') else [0]
     return VisualRuntime(task, policy.visual_encoder,
                          DepthSensor(task, camera, geometry_groups=groups, randomize=False))
-
-
-def flat_training_config(source, num_envs, seed):
-    """保持平地审计的场景设置，用独立训练seed采集源策略行为。"""
-    config=deepcopy(source)
-    config.num_envs, config.seed=num_envs, seed
-    config.terrain.seed=seed
-    config.randomization.seed=200000+seed
-    config.randomization.enabled=False
-    config.camera.pitch_down_degrees=25.
-    config.terrain.obstacles=False
-    config.terrain.levels, config.terrain.layouts=2, 1
-    config.terrain.width, config.terrain.flat_length, config.terrain.spawn_x=20., 20., 10.
-    config.route.enabled=False
-    config.command.mode='legacy'
-    config.command.vx=(.3,.3)
-    config.command.vy=config.command.wz=(0.,0.)
-    return config
 
 
 def fit_actions(actor, optimizer, states, targets, weights, args):

@@ -21,7 +21,7 @@ from rl.run_io import load_policy, save_json, env_from_dict
 
 def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
              video=None, max_steps=None, route_following=None, visual_ablation='none',
-             camera_pitch=None, env_config=None, video_env_index=0):
+             camera_pitch=None, env_config=None, video_env_index=0, video_hide_surroundings=False):
     if not 0<=video_env_index<num_envs:
         raise ValueError('录像环境编号必须落在num_envs范围内')
     actor, original, saved = load_policy(checkpoint, device)
@@ -48,6 +48,8 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
         original.route.enabled = route_following
     label = actor.mode+(' | proprio-only' if actor.proprio_only else
                         f' | {visual_ablation}' if visual_ablation != 'none' else '')
+    if video and video_hide_surroundings:
+        label+=' | viewer walls hidden'
     records = []
     gait_trace = []
     writer = imageio.get_writer(str(video), fps=30, codec='libx264', quality=7) if video else None
@@ -86,7 +88,8 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                     data = mujoco.MjData(model)
                     renderer = mujoco.Renderer(model, height=720, width=1280)
                     option = mujoco.MjvOption()
-                    option.geomgroup[:] = [1, 1, 1, 0, int(config.terrain.surroundings), 0]
+                    # 只改变第三人称渲染，策略深度相机和GPU物理仍保留侧墙。
+                    option.geomgroup[:] = [1, 1, 1, 0, int(config.terrain.surroundings and not video_hide_surroundings), 0]
                     camera = mujoco.MjvCamera()
                     camera.distance, camera.elevation, camera.azimuth = 2.5, -25, 110
                 next_frame = 0.
@@ -194,6 +197,7 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                   route_override=route_following,camera_pitch_override=camera_pitch,
                   env_config_override=env_config,
                   video_world_index=video_env_index if video else None,
+                  video_hide_surroundings=bool(video and video_hide_surroundings),
                   terrain_obstacles=original.terrain.obstacles,
                   stair_height=original.terrain.step_height(level/max(original.terrain.levels-1, 1))
                                if original.terrain.obstacles else 0.,
@@ -222,6 +226,7 @@ def main():
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--video')
     parser.add_argument('--video-env-index',type=int,default=0,help='指定录像及接触轨迹对应的并行环境编号')
+    parser.add_argument('--video-hide-surroundings',action='store_true',help='仅观察录像隐藏侧墙，物理和策略深度输入保留侧墙')
     parser.add_argument('--camera-pitch',type=float)
     parser.add_argument('--env-config')
     parser.add_argument('--max-steps', type=int)
@@ -232,7 +237,7 @@ def main():
     torch.set_num_threads(1)
     report = evaluate(args.checkpoint, args.num_envs, args.seeds, args.level,
                       args.device, args.video, args.max_steps, args.route_following, args.visual_ablation,
-                      args.camera_pitch,args.env_config,args.video_env_index)
+                      args.camera_pitch,args.env_config,args.video_env_index,args.video_hide_surroundings)
     stamp = datetime.now(ZoneInfo('Asia/Hong_Kong')).strftime('%Y%m%d_%H%M%S_%f')
     folder = Path(args.checkpoint).resolve().parent.parent/'evaluations'
     folder.mkdir(exist_ok=True)

@@ -70,6 +70,25 @@ class VelocitySchedule:
         self.applied += (self.target-self.applied).clamp(-limit, limit)
 
 
+def nominal_flat_training_config(source, num_envs, seed):
+    """复用正常平地审计的场景设置，用独立训练seed保持已有步态。"""
+    from copy import deepcopy
+    config=deepcopy(source)
+    config.num_envs, config.seed=num_envs, seed
+    config.terrain.seed=seed
+    config.randomization.seed=200000+seed
+    config.randomization.enabled=False
+    config.camera.pitch_down_degrees=25.
+    config.terrain.obstacles=False
+    config.terrain.levels, config.terrain.layouts=2, 1
+    config.terrain.width, config.terrain.flat_length, config.terrain.spawn_x=20., 20., 10.
+    config.route.enabled=False
+    config.command.mode='legacy'
+    config.command.vx=(.3,.3)
+    config.command.vy=config.command.wz=(0.,0.)
+    return config
+
+
 def free_training_config(source, d435i_scenes=False):
     """自由速度任务显式设置启停，防止继承路线阶段的stop_fraction=0。"""
     from copy import deepcopy
