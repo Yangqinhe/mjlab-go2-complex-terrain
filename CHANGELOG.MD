@@ -838,3 +838,10 @@ PPO损失和KL早停保持原实现，通过既有anchor_coef=20加强辅助标�
 16环境两次真实PPO更新通过，数值异常0，检查点明确记录两个探索比例。新控制器初始化actor/critic逐张量等于第32批原中途模型，未重置为参考945。验证mean_close_ppo_verification.json；计划及原配置mean_close_ppo_plan.json，next_checks.json记录该微调仅针对level6，进入新高度后需重新考虑探索量和专家约束，完整goal范围不变。
 
 原第35批已完整保存（184731_student_ppo_seed85035），尚未筛查，不认定其通过或失败；旧113532控制目录标记superseded_preserved并指向新控制器，所有旧记录及权重保留。源代码/状态备份resume_history/20261107_184900_mean_close_ppo。新185903_continual_student目录fork_provenance.json记录完整沿革，活动指针已切换、监视器重新跟随。新分支从既有五seed重测基线再继续，随机化保持关闭，尚未升档或验收成功。
+
+
+## 2026-11-07：明确历史发布与当前步态目标，并保留奖励审计
+
+README开头将195明确标为历史路线/接触验收，保留240/240历史结果及下载链接；当前正确步态目标尚未完成。修正深度说明的版本范围：旧195只看地形组，当前D435i实际学生看group0/4地形、侧墙和装饰物，48×64、10Hz、87×58度；当前DR仍关闭。此改动仅文档，未改模型或奖励。
+
+另以第32批中途权重作四布局真实均值闭环分区域奖励审计，gait_reward_regions.json明确not_acceptance=true。平地平均gait_touchdown约0.062、tracking_xy约1.182；上楼gait_touchdown为0，下楼约束含额外长期腾空惩罚。虽然换足奖励存在地形区域差异，但同一未乘dt量纲下差异较小，不能据此认定为当前主要原因，故未改奖励；也不把该单次审计外推为全部seed结论。微调分支继续原门槛复核，完整goal active。
