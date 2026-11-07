@@ -954,3 +954,13 @@ README开头将195明确标为历史路线/接触验收，保留240/240历史结
 - 实际证据在 outputs/nominal_gait_goal_audits/downstairs_deficit_first_batch_verification.json、downstairs_deficit_second_batch_verification.json、downstairs_deficit_round1_remaining_defects.json、downstairs_deficit_round2_remaining_defects.json；原代码、全部权重与outputs均保留。六档固定120+新seed120、独立平地及同一最终权重实际接触/落脚视频复核仍未完成，域随机化保持关闭，goal继续active。
 
 - 第二批中途1670后续完整检查：12cm17/20、速度0.11127m/s、最长腾空80ms，正常平地专项通过。腾空合格但速度与完成率仍不合格；第三批已从累计学习分支1695继续50次更新，验收最佳与训练分支分别保留，未把17/20当作成功。
+
+
+## 2026-11-08：1595地形特征诊断20/20且80ms，转为固定控制网络再对齐视觉
+
+- 下楼支撑成本第三批最终1745在12cm14/20、速度0.14523m/s、120ms；中途1720同为14/20、速度0.11928m/s、140ms。两者正常平地专项通过，但没有通过复杂地形。前三批最终19/20→16/20→14/20，不能认为继续固定视觉更新动作头已稳定改善。
+- 保持1595动作/本体/速度网络不变，仅将10Hz视觉latent替换为同频保持的教师真实地形latent：完整5seed×4布局20/20、速度0.07455m/s、最长80ms、无数值异常、无提前截断。仅作特权诊断，不作为学生验收或最终权重；证据 outputs/nominal_gait_goal_audits/ppo1595_privileged_latent_full20.json。
+- 结束旧控制父进程和对应监视器，旧状态标记superseded_preserved，已经开始的第四批PPO子进程678625继续完成保存，不删除或宣称其失败。新任务 outputs/nominal_gait_goal_audits/visual1595_refresh 等待该批完整结束后自动执行视觉训练，当前实际运行的权重和配置均保留。
+- 视觉阶段恢复1595真实学生权重，固定全部动作、本体、速度网络和critic，仅更新CNN/GRU。64环境，固定0/6/9/9混合档位、几何seed56000、相机与真实深度路径保持，100次顺序视觉更新，采图时保持教师地形标签，冻结学生自身控制网络生成动作标签；混合引导0.5、动作损失1、latent损失0.1、视觉学习率2e-5、共享学习率0。沿用已经验证的held-terrain-guide实现，未改网络或控制接口。
+- 本次监督更新局部编号1～100，源视觉累计275、源动作PPO1595分别记录，不把视觉次数计入PPO。结束时逐张量核对共享控制与critic不变，然后按25/50/75/100逐候选检查实际深度的正常平地及完整12cm20路线；不会仅凭特权诊断采用新权重。
+- 全程随机化关闭。六档固定120+新seed120、独立平地、同一最终权重实际接触/落脚视频复核均仍须完成，原代码、权重与全部outputs保留，goal继续active。
