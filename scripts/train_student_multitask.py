@@ -176,7 +176,7 @@ def main():
                              torch.full((args.free_envs,1),args.free_std_scale,device='cuda:0')])
         begin=time.monotonic()
         for iteration in range(start+1,start+args.iterations+1):
-            sums=[dict(reward=0.,episodes=0,successes=0,falls=0) for _ in tasks]
+            sums=[dict(reward=0.,episodes=0,successes=0,falls=0,width_reward=0.,slip_reward=0.) for _ in tasks]
             for _ in range(args.horizon):
                 with torch.no_grad():
                     states=[];critics=[]
@@ -223,6 +223,10 @@ def main():
                     agent.store_batch(sample,torch.cat(rewards),torch.cat(dones),torch.cat(terms),torch.cat(next_critics))
                     for index,(t,v,done,info) in enumerate(zip(tasks,visuals,dones,results)):
                         sums[index]['reward']+=info['terms']['tracking_xy'].mean().item()
+                        if args.nominal_gait:
+                            width_reward=info['terms'].get('normal_stance_width')
+                            if width_reward is not None:sums[index]['width_reward']+=width_reward.mean().item()
+                            sums[index]['slip_reward']+=info['terms']['slip'].mean().item()
                         ids=done.nonzero(as_tuple=False).flatten()
                         if len(ids):
                             sums[index]['episodes']+=len(ids)
@@ -240,6 +244,10 @@ def main():
                      route_episodes=sums[0]['episodes'],route_successes=sums[0]['successes'],
                      free_episodes=sums[1]['episodes'],free_successes=sums[1]['successes'],
                      numerical_failures=sum(t.numerical_failures for t in tasks),**metrics)
+            if args.nominal_gait:
+                for name,index in (('route',0),('free',1)):
+                    row[name+'_width_reward']=sums[index]['width_reward']/args.horizon
+                    row[name+'_slip_reward']=sums[index]['slip_reward']/args.horizon
             append_csv(folder/'metrics.csv',row)
             with (folder/'train.log').open('a') as f:f.write(json.dumps(row)+'\n')
             if iteration==start+1 or (iteration-start)%10==0:print(json.dumps(row),flush=True)

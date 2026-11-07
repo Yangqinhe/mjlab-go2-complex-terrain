@@ -53,8 +53,11 @@ def normal_foot_terms(task, command, flat):
     ids = [i for i, name in enumerate(task.robot.joint_names) if name.endswith('_hip_joint')]
     hip = ((task.robot.data.joint_pos[:, ids].abs()-w.front_hip_deadband).clamp(min=0)
            /w.front_hip_deadband).square().mean(-1)
+    widths = torch.stack([feet[:,0,1]-feet[:,1,1], feet[:,2,1]-feet[:,3,1]], -1)
+    # 每脚落点允许±4cm，不能代替前后站宽约束；居中软成本避免后足收窄到审计下限之外。
+    width_error = ((widths-w.front_width_target)/w.front_width_tolerance).square().mean(-1)
     active = flat & (command[:, 2].abs()<.1)
-    return dict(all_hip_posture=w.all_hip_deviation*hip*active,
+    return dict(normal_stance_width=w.foot_landing*width_error*active, all_hip_posture=w.all_hip_deviation*hip*active,
                 normal_foot_landing=w.foot_landing*(landing+lateral)*active)
 
 
