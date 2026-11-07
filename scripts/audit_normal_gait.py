@@ -106,7 +106,12 @@ def main():
            +float((p95_width-.344).clamp(min=0).sum()/.04)+float((hip_p95-.25).clamp(min=0).sum()/.15)
            +sum(max(0.,.95-r['inside_fraction'])*10+max(0.,r['stance_slip_p95_m_s']-MAX_STANCE_POINT_SPEED)*10
                  +int(r['touchdowns']<4*len(args.seeds)) for r in foot_reports)+10*crossing)
-    report=dict(checkpoint=str(Path(args.checkpoint).resolve()),iteration=saved['iteration'],seeds=args.seeds,
+    # 排名也必须计入生存、接触、速度和支撑占比，不能让减速或跌倒的候选凭低滑移占据最佳。
+    gate_penalty=(100.*failed_total+100.*int(not contact_pass)+10*max(0.,rmse-.1)/.1
+        +10*sum(max(0.,.3-r['duty_factor'])+max(0.,r['duty_factor']-.8) for r in foot_reports))
+    error+=gate_penalty
+    report=dict(selection_gate_penalty=gate_penalty,
+        checkpoint=str(Path(args.checkpoint).resolve()),iteration=saved['iteration'],seeds=args.seeds,
         slip_measurement='平地球形足底接触点速度近似；不是接触求解器直接测量值',
         nominal=args.nominal,randomization_enabled=False if args.nominal else original.randomization.enabled,
         passed=failed_total==0 and pose_pass and feet_pass and contact_pass and crossing<=.001 and rmse<=.1,
