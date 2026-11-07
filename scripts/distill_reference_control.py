@@ -6,7 +6,6 @@ import shutil
 import time
 
 import torch
-import torch.nn.functional as F
 
 from env.gait import flat_terrain_mask
 from env.perception.config import DepthConfig
@@ -26,11 +25,13 @@ def reference_visual(task, policy, saved):
                          DepthSensor(task, camera, geometry_groups=groups, randomize=False))
 
 
-def fit_actions(actor, optimizer, states, targets, args):
+def fit_actions(actor, optimizer, states, targets, weights, args):
     total, count=0., 0
     for _ in range(args.epochs):
         for ids in torch.randperm(len(states), device=states.device).split(args.batch_size):
-            loss=F.mse_loss(actor(states[ids])[0], targets[ids])
+            error=(actor(states[ids])[0]-targets[ids]).square().mean(-1)
+            weight=weights[ids]
+            loss=(error*weight).sum()/weight.sum()
             if not torch.isfinite(loss):
                 raise RuntimeError('参考动作监督损失出现非有限值')
             optimizer.zero_grad()
@@ -54,11 +55,14 @@ def main():
     parser.add_argument('--batch-size', type=int, default=8192)
     parser.add_argument('--learning-rate', type=float, default=2e-5)
     parser.add_argument('--teacher-mix', type=float, default=.5)
+    parser.add_argument('--flat-weight', type=float, default=1.)
     parser.add_argument('--training-levels', type=int, nargs='+', default=[0,6,9,12])
     parser.add_argument('--seed', type=int, default=89991)
     args=parser.parse_args()
     if not 0 <= args.teacher_mix <= 1:
         parser.error('teacher-mix应在0到1之间')
+    if args.flat_weight<=0:
+        parser.error('flat-weight必须大于0')
     torch.set_num_threads(1)
     actor, config, saved=load_policy(args.resume)
     flat, _, flat_saved=load_policy(args.flat_reference)
@@ -103,7 +107,7 @@ def main():
         torch.manual_seed(args.seed)
         began=time.monotonic()
         for iteration in range(1, args.iterations+1):
-            states, targets=[], []
+            states, targets, weights=[], [], []
             episodes=successes=highest_episodes=highest_successes=0
             flat_fraction=0.
             for _ in range(args.horizon):
@@ -120,6 +124,8 @@ def main():
                     action=args.teacher_mix*target+(1-args.teacher_mix)*actor(state)[0]
                     states.append(state.clone())
                     targets.append(target.clone())
+                    # 平地保持源策略的动作，抑制地形监督对正常站宽与落脚的干扰。
+                    weights.append(1+(args.flat_weight-1)*is_flat.float())
                     flat_fraction+=is_flat.float().mean().item()
                     _, terminated, truncated, info=task.step(action)
                     for runtime in (visual, flat_visual, rough_visual):
@@ -134,8 +140,8 @@ def main():
                         task.reset(ids)
                         for runtime in (visual, flat_visual, rough_visual):
                             runtime.reset(ids)
-            loss=fit_actions(actor, agent.actor_optimizer, torch.cat(states), torch.cat(targets), args)
-            row=dict(iteration=iteration, action_loss=loss, teacher_mix=args.teacher_mix,
+            loss=fit_actions(actor, agent.actor_optimizer, torch.cat(states), torch.cat(targets), torch.cat(weights), args)
+            row=dict(iteration=iteration, action_loss=loss, teacher_mix=args.teacher_mix, flat_weight=args.flat_weight,
                      flat_reference_fraction=flat_fraction/args.horizon, episodes=episodes, successes=successes,
                      highest_level=max(args.training_levels), highest_episodes=highest_episodes,
                      highest_successes=highest_successes, numerical_failures=task.numerical_failures,
