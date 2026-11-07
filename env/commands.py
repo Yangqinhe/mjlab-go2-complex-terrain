@@ -75,6 +75,8 @@ def nominal_flat_training_config(source, num_envs, seed):
     from copy import deepcopy
     config=deepcopy(source)
     config.num_envs, config.seed=num_envs, seed
+    # 独立平地集中学习接触，及时重置以避免长期侧漂撞到装饰物。
+    config.episode_seconds=12.5
     config.terrain.seed=seed
     config.randomization.seed=200000+seed
     config.randomization.enabled=False

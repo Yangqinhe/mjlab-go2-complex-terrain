@@ -57,3 +57,19 @@ MSE模仿减少动作差异，但不能直接保证实际接触速度。改用�
 16路线+4平地6次GPU检查完成，PPO1601，实际覆盖至少4次平地超时重置；仅动作头/log_std及critic改变，视觉/历史/速度不变，数值异常0。保存配置为平地12.5秒、路线90秒，正强度DR配置与修改前逐字段一致。检查权重不采用。证据 `nominal_short_flat_ppo_smoke_verification.json`，修改前源脚本另存 `source_train_student_multitask_before_short_flat.py`。
 
 后续任务 `nominal_short_flat_ppo` 已排队，等待当前四个候选完整验收。如果有15cm通过候选，跳过重训并等待更高高度复核；全部未通过则从原平地合格、15cm13/20的控制监督50基线重新开始，seed90005、其他PPO参数及128+128环境不变。状态 `outputs/nominal_gait_goal_audits/nominal_short_flat_ppo/status.json`。所有旧文件保留，域随机化继续关闭。
+
+## 首批全部拒用，短回合PPO已接续
+
+首批90003四个候选的15cm完整路线分别12/6/8/4条成功（各20路线），速度误差0.11667/0.14178/0.13858/0.15133m/s、最长腾空0.24/0.26/0.22/0.24秒，均正常平地通过但楼梯未通过，全部保留拒用。短回合任务已自动接续：`outputs/20261108_064853_868242_student_ppo_seed90005`，从原基线重新开始，不采用90003失败权重。
+
+本批约40次更新时，独立平地跟踪奖励约1.439、支撑速度尾部成本约-0.0059、critic损失约0.0305，明显低于前批长回合中受碰撞影响的成本。训练数值异常0，但这些训练值不代替最终自主验收。第25次检查点的冻结参数、平地12.5秒/路线90秒和源计数已核对，证据在本批 `candidate_1620_training_verification.json`。
+
+增加直接截断时序检查：四世界在第625步均 `truncated=True`、`terminated=False`，重置后下一步回合计数均为1，数值异常0。证据 `nominal_short_flat_timeout_mechanics.json`。先前6次PPO检查的计数本身统计“回合结束”，字段更名为 `free_episode_ends_observed`；原JSON另存备份，具体超时标志由上述直接检查补充。
+
+12.5秒参数统一放在 `env.commands.nominal_flat_training_config`，PPO及后续监督采样入口共用，避免重复设置；本批PPO实际配置保持相同，正强度DR分支逐字段核对仍不变。修改前两个源文件另存 `source_commands_before_shared_flat_horizon.py` 与 `source_multitask_before_shared_flat_horizon.py`。
+
+## 髋目标硬限幅参考诊断拒用
+
+额外核对旧195专家的髋目标偏移限为±0.1rad，保持原相机/GRU和当前物理场景。前腿平均站宽降为0.31182m，但后腿0.24226m低于下限，四脚支撑期足底速度P95约0.93495/0.48389/0.16318/0.18688m/s，平地未通过；15cm四布局0/4、vx误差0.17603m/s、最长0.12秒，也未通过。
+
+该实验只在独立诊断进程拦截参考动作，原权重、生产模型、学生输出接口与PD均未改变。结果已拒用，没有用于训练标签或部署，避免把站宽改善当作完整正确步态。原始报告及拒用决定为 `legacy195_hip_clip01_*diagnostic.json` 与 `legacy195_hip_clip01_decision.json`。
