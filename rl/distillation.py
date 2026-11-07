@@ -85,7 +85,7 @@ def update_sequences(student, optimizer, batch, config):
         latent_loss = (latent_loss*mask).sum()/mask.sum().clamp(min=1)
         velocity_loss = F.mse_loss(2*student.velocity(states),
                                    2*batch['velocity'][burn:, ids].flatten(0, 1))
-        loss = action_loss+config.latent_coef*latent_loss+config.velocity_coef*velocity_loss
+        loss = config.action_coef*action_loss+config.latent_coef*latent_loss+config.velocity_coef*velocity_loss
         if not torch.isfinite(loss):
             raise RuntimeError('Non-finite distillation loss')
         optimizer.zero_grad()

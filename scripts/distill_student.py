@@ -6,6 +6,7 @@ from dataclasses import asdict
 import json
 from pathlib import Path
 import time
+import shutil
 
 import torch
 
@@ -36,6 +37,7 @@ def main():
     parser.add_argument('--visual-lr', type=float)
     parser.add_argument('--common-lr', type=float)
     parser.add_argument('--latent-coef', type=float)
+    parser.add_argument('--action-coef', type=float, help='0用于只对齐地形latent，配合freeze-common保留动作网络')
     parser.add_argument('--training-levels', type=int, nargs='+', help='固定混合档位，重复某档可增加其采样比例')
     parser.add_argument('--teacher-mix', type=float, help='采样时固定教师动作比例，评估仍只使用学生')
     parser.add_argument('--action-noise-std', type=float, default=0.)
@@ -64,6 +66,8 @@ def main():
                            action_noise_std=args.action_noise_std)
     if args.latent_coef is not None:
         config.latent_coef = args.latent_coef
+    if args.action_coef is not None:
+        config.action_coef = args.action_coef
     saved = torch.load(args.resume, map_location=args.device, weights_only=False) if args.resume else None
     training = TrainConfig(**(saved or checkpoint)['train_config'])
     if training.proprio_only:
@@ -149,6 +153,8 @@ def main():
                 save_checkpoint(folder/'checkpoints/latest.pt', agent, iteration,
                                 env_config, training, 'distill', teacher=args.teacher,
                                 deployment=deployment, task=task)
+                if config.action_coef == 0:
+                    shutil.copyfile(folder/'checkpoints/latest.pt',folder/f'checkpoints/iteration_{iteration}.pt')
         save_checkpoint(folder/'checkpoints/final.pt', agent, iteration,
                         env_config, training, 'distill', teacher=args.teacher,
                         deployment=deployment, task=task)
