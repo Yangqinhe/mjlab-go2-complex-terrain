@@ -17,10 +17,11 @@ from env.perception.config import DepthConfig
 from env.perception.depth_sensor import DepthSensor
 from env.perception.runtime import VisualRuntime
 from env.training_task import Go2Task
-from env.gait import flat_mask
+from env.gait import flat_terrain_mask
 from rl.algorithms.perceptive_networks import PerceptiveActor, PrivilegedCritic
 from rl.algorithms.ppo import PPO
 from rl.config import TrainConfig
+from rl.reference_targets import terrain_reference_weight
 from rl.run_io import ROOT, append_csv, deployment_config, env_from_dict, load_policy, new_run, save_checkpoint, save_json
 
 
@@ -84,6 +85,7 @@ def main():
     p.add_argument('--front-posture-scale',type=float,default=0.)
     p.add_argument('--reference',default=str(REFERENCE))
     p.add_argument('--terrain-reference',help='仅在标称复杂地形使用冻结专家标签；平地仍保留正常步态参考')
+    p.add_argument('--terrain-reference-transition',type=float,default=0.,help='辅助标签在障碍前后平滑过渡的距离，0保持原切换方式')
     p.add_argument('--visual',default=str(VISUAL))
     p.add_argument('--free-reference',default=str(FREE_REFERENCE))
     p.add_argument('--free-anchor-weight',type=float,default=.5)
@@ -107,6 +109,8 @@ def main():
     if args.flat_gait_only and not (args.nominal_gait and args.strength==0):p.error('flat-gait-only仅用于关闭随机化的标称步态课程')
     if args.terrain_reference and not (args.nominal_gait and args.strength==0):
         p.error('terrain-reference仅用于关闭随机化的标称步态恢复')
+    if args.terrain_reference_transition and not args.terrain_reference:
+        p.error('terrain-reference-transition需要terrain-reference')
     torch.set_num_threads(1)
     if args.nominal_gait:args.free_reference=args.reference
     reference,source,reference_saved=load_policy(args.reference)
@@ -150,6 +154,8 @@ def main():
         agent.actor_optimizer.state.pop(agent.actor.log_std,None)
     with torch.no_grad():agent.actor.log_std.add_(torch.log(torch.tensor(args.std)/agent.actor.log_std.exp().mean()))
     route_cfg,free_cfg=task_configs(source,args.strength,args.route_envs,args.free_envs,args.seed,flat_gait=args.flat_gait_only)
+    if args.terrain_reference_transition and args.terrain_reference_transition<=route_cfg.gait.flat_margin:
+        p.error('参考过渡距离必须大于平地判定余量')
     if terrain_reference is not None:
         assert asdict(route_cfg.camera)==asdict(source.camera), '共享平地视觉特征需要相同的相机配置'
         assert reference_saved['env_config']['terrain'].get('surroundings'), '平地参考需要相同可见几何组'
@@ -170,6 +176,7 @@ def main():
                   route_envs=args.route_envs,free_envs=args.free_envs,strength=args.strength,
                   arguments=vars(args),numerical_failures=0,
                   normal_gait_reward_revision='stance_speed_tail_v3',
+                  reference_target_revision=('geometry_transition_v2' if args.terrain_reference_transition else 'geometry_v2'),
                   terrain_reference=args.terrain_reference,
                   terrain_reference_sha256=(hashlib.sha256(Path(args.terrain_reference).read_bytes()).hexdigest() if args.terrain_reference else None),
                   nominal_hip_prior=dict(enabled=args.nominal_gait,neutral_target=args.flat_gait_only,limit_rad=route_cfg.training_reward.front_hip_deadband,
@@ -201,7 +208,7 @@ def main():
                              torch.full((args.free_envs,1),args.free_std_scale,device='cuda:0')])
         begin=time.monotonic()
         for iteration in range(start+1,start+args.iterations+1):
-            sums=[dict(reward=0.,episodes=0,successes=0,falls=0,width_reward=0.,slip_reward=0.,touchdown_velocity_reward=0.,stance_speed_reward=0.,terrain_reference_fraction=0.) for _ in tasks]
+            sums=[dict(reward=0.,episodes=0,successes=0,falls=0,width_reward=0.,slip_reward=0.,touchdown_velocity_reward=0.,stance_speed_reward=0.,terrain_reference_fraction=0.,reference_transition_fraction=0.) for _ in tasks]
             for _ in range(args.horizon):
                 with torch.no_grad():
                     states=[];critics=[]
@@ -221,9 +228,14 @@ def main():
                         normal_state,_=route.inputs(visuals[0].latent)
                         normal_target=reference(normal_state)[0]
                         # 仅切换辅助标签；执行动作始终来自当前学生，部署不依赖旧专家。
-                        terrain_mask=~flat_mask(route,local_x)
-                        target=torch.where(terrain_mask[:,None],target,normal_target)
-                        sums[0]['terrain_reference_fraction']+=terrain_mask.float().mean().item()
+                        terrain_mask=~flat_terrain_mask(route,local_x)
+                        weight=terrain_reference_weight(route,local_x,args.terrain_reference_transition)
+                        if args.terrain_reference_transition:
+                            sums[0]['reference_transition_fraction']+=(weight>terrain_mask.float()).float().mean().item()
+                            target=torch.lerp(normal_target,target,weight[:,None])
+                        else:
+                            target=torch.where(terrain_mask[:,None],target,normal_target)
+                        sums[0]['terrain_reference_fraction']+=weight.mean().item()
                     free_ref_state,_=free.inputs(free_reference_visual.latent)
                     free_target=free_reference(free_ref_state)[0]
                     if args.nominal_gait:
@@ -232,7 +244,7 @@ def main():
                         hip_ids=[i for i,name in enumerate(route.robot.joint_names) if name.endswith('_hip_joint')]
                         local_x=(route.robot.data.root_link_pos_w[:,0]-route.env.scene.env_origins[:,0]
                                  +route.config.terrain.spawn_x)
-                        straight=flat_mask(route,local_x)&(route.command()[:,2].abs()<.1)
+                        straight=flat_terrain_mask(route,local_x)&(route.command()[:,2].abs()<.1)
                         limit=route_cfg.training_reward.front_hip_deadband/route_cfg.action_scale
                         for i in hip_ids:
                             target[:,i]=torch.where(straight,target[:,i].clamp(-limit,limit),target[:,i])
@@ -290,6 +302,8 @@ def main():
                     row[name+'_stance_speed_reward']=sums[index]['stance_speed_reward']/args.horizon
             if terrain_reference is not None:
                 row['terrain_reference_fraction']=sums[0]['terrain_reference_fraction']/args.horizon
+                if args.terrain_reference_transition:
+                    row['reference_transition_fraction']=sums[0]['reference_transition_fraction']/args.horizon
             append_csv(folder/'metrics.csv',row)
             with (folder/'train.log').open('a') as f:f.write(json.dumps(row)+'\n')
             if iteration==start+1 or (iteration-start)%10==0:print(json.dumps(row),flush=True)
@@ -299,7 +313,8 @@ def main():
                     task_configs=dict(route=asdict(route_cfg),free=asdict(free_cfg)),reference=args.reference,
                     exploration_std_scales=dict(route=args.route_std_scale,free=args.free_std_scale),
                     critic_free_task_marker=args.critic_task_marker,
-                    randomization_strength=args.strength,terrain_reference=args.terrain_reference)
+                    randomization_strength=args.strength,terrain_reference=args.terrain_reference,
+                    terrain_reference_transition=args.terrain_reference_transition)
                 if args.nominal_gait:
                     shutil.copyfile(folder/'checkpoints/latest.pt',folder/f'checkpoints/iteration_{iteration}.pt')
                 if iteration==start+args.iterations:

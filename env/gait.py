@@ -8,7 +8,8 @@ MAX_FLIGHT_SECONDS = .06
 MAX_STANCE_POINT_SPEED = .15  # 平地足底接触点估计切向速度上限，m/s。
 
 
-def flat_mask(task, local_x):
+def flat_terrain_mask(task, local_x):
+    """仅判定几何平地；参考选择不应依赖回合年龄。"""
     cfg = task.config.terrain
     mask = torch.ones_like(local_x, dtype=torch.bool) if not cfg.obstacles else torch.zeros_like(local_x, dtype=torch.bool)
     if cfg.obstacles:
@@ -16,8 +17,12 @@ def flat_mask(task, local_x):
             if name in ('flat', 'platform', 'transition', 'finish'):
                 margin = task.config.gait.flat_margin
                 mask |= (local_x > start+margin) & (local_x < end-margin)
-    # reset时机器人会短暂落地，不把初始化落地过程算作步态腾空。
-    return mask & (task.env.episode_length_buf*task.dt > .5)
+    return mask
+
+
+def flat_mask(task, local_x):
+    # 仅奖励/统计排除reset落地过程；不能用取反结果选择楼梯专家。
+    return flat_terrain_mask(task, local_x) & (task.env.episode_length_buf*task.dt > .5)
 
 
 class GaitTracker:

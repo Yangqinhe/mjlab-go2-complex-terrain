@@ -11,7 +11,7 @@ import time
 import torch
 import torch.nn.functional as F
 
-from env.gait import flat_mask
+from env.gait import flat_terrain_mask
 from env.perception.config import DepthConfig
 from env.perception.depth_sensor import DepthSensor
 from env.perception.runtime import VisualRuntime
@@ -55,7 +55,7 @@ def main():
     agent=PPO(actor=student,critic=critic,config=training,device='cuda:0')
     agent.actor_optimizer=torch.optim.Adam(student.actor.parameters(),lr=args.lr)
     folder=new_run('mean_bc',route_cfg,training)
-    metadata=dict(status='running',method='deterministic_student_state_dagger',parent=args.checkpoint,
+    metadata=dict(status='running',method='deterministic_student_state_dagger',reference_target_revision='geometry_v2',parent=args.checkpoint,
         flat_reference=args.flat_reference,terrain_reference=args.terrain_reference,
         terrain_reference_sha256=hashlib.sha256(Path(args.terrain_reference).read_bytes()).hexdigest(),
         ppo_iteration_unchanged=saved['iteration'],randomization_enabled=False,
@@ -82,7 +82,7 @@ def main():
                         state,_=task.inputs(visual.latent);target=normal(state)[0].clone()
                         if index==0:
                             local_x=task.robot.data.root_link_pos_w[:,0]-task.env.scene.env_origins[:,0]+task.config.terrain.spawn_x
-                            rough=~flat_mask(task,local_x)
+                            rough=~flat_terrain_mask(task,local_x)
                             expert_state,_=task.inputs(expert_visual.latent)
                             target=torch.where(rough[:,None],terrain_expert(expert_state)[0],target)
                             rough_samples+=int(rough.sum())

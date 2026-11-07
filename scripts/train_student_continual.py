@@ -37,6 +37,7 @@ def main():
     parser.add_argument('--nominal-free-std-scale',type=float,default=2.)
     parser.add_argument('--nominal-anchor-coef',type=float,default=2.)
     parser.add_argument('--nominal-terrain-reference')
+    parser.add_argument('--nominal-reference-transition',type=float,default=0.)
     parser.add_argument('--nominal-continuous-updates',action='store_true',help='标称训练分支累计更新，最佳验收权重单独保留')
     parser.add_argument('--nominal-gait-first',action='store_true',help='先关闭随机化纠正四足步态，数值和视频复核通过才开放随机化')
     parser.add_argument('--require-normal-gait',action='store_true')
@@ -65,7 +66,7 @@ def main():
         args.flat_gait_first=recovered.get('nominal_substage')=='flat'
         args.require_normal_gait=recovered.get('require_normal_gait',False)
         for key,value in recovered.get('controller_config',{}).items():
-            if key in ('updates_per_round','nominal_actor_lr','nominal_anchor_coef','flat_anchor_coef','route_envs','free_envs','nominal_max_level','nominal_screen_seeds','nominal_terrain_reference','nominal_continuous_updates','nominal_route_std_scale','nominal_free_std_scale'):
+            if key in ('updates_per_round','nominal_actor_lr','nominal_anchor_coef','flat_anchor_coef','route_envs','free_envs','nominal_max_level','nominal_screen_seeds','nominal_terrain_reference','nominal_continuous_updates','nominal_route_std_scale','nominal_free_std_scale','nominal_reference_transition'):
                 setattr(args,key,value)
         args.reference_checkpoint=recovered['reference']
         args.visual_source=recovered['visual_source']
@@ -124,7 +125,7 @@ def main():
                    phase='nominal_gait' if args.nominal_gait_first else 'training',
                    nominal_substage='flat' if args.flat_gait_first else 'complex',
                    controller_config={key:getattr(args,key) for key in ('updates_per_round','nominal_actor_lr',
-                       'nominal_anchor_coef','flat_anchor_coef','route_envs','free_envs','nominal_max_level','nominal_screen_seeds','nominal_terrain_reference','nominal_continuous_updates','nominal_route_std_scale','nominal_free_std_scale')},
+                       'nominal_anchor_coef','flat_anchor_coef','route_envs','free_envs','nominal_max_level','nominal_screen_seeds','nominal_terrain_reference','nominal_continuous_updates','nominal_route_std_scale','nominal_free_std_scale','nominal_reference_transition')},
                    visual_source=args.visual_source,folder=str(folder),records=[],
                    goal=('先在标称环境纠正四足接触与落脚；数值和视频复核均通过后再训练域随机化' if args.nominal_gait_first
                          else '完整域随机化下六档固定120+独立120路线全完成、速度/60ms步态通过，33项变速停车及20/35/50度边界通过'))
@@ -340,7 +341,8 @@ def main():
                 arguments+=['--nominal-gait','--training-max-level',args.nominal_max_level,
                             '--route-std-scale',args.nominal_route_std_scale,'--free-std-scale',args.nominal_free_std_scale]
             if args.nominal_gait_first and args.nominal_terrain_reference:
-                arguments+=['--terrain-reference',args.nominal_terrain_reference]
+                arguments+=['--terrain-reference',args.nominal_terrain_reference,
+                            '--terrain-reference-transition',args.nominal_reference_transition]
             if args.flat_gait_first:arguments+=['--flat-gait-only','--route-std-scale',2.]
             if args.require_normal_gait:
                 arguments+=['--normal-foot-scale',1.,'--free-anchor-weight',0.]
@@ -396,7 +398,10 @@ def main():
             record=dict(round=round_id,strength=strength,checkpoint=candidate,screen=result,
                         selected=accepted,anchor=metadata['arguments']['anchor_coef'],
                         actor_lr=metadata['arguments']['actor_lr'],freeze_proprio=metadata['arguments']['freeze_proprio'],
-                        terrain_reference=metadata.get('terrain_reference'),candidate_screens=candidate_screens)
+                        terrain_reference=metadata.get('terrain_reference'),
+                        reference_target_revision=metadata.get('reference_target_revision','legacy_age_mask_v1'),
+                        reference_transition=metadata['arguments'].get('terrain_reference_transition',0.),
+                        candidate_screens=candidate_screens)
             if args.nominal_gait_first and args.nominal_continuous_updates:
                 # 保留学习分支的累计更新；验收最佳不受影响。失败分支不直接发布。
                 eligible=[trial for trial in candidate_screens if trial['screen']['front_stance']['passed']
