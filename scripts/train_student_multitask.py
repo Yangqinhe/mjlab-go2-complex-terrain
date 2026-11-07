@@ -16,6 +16,7 @@ from env.perception.config import DepthConfig
 from env.perception.depth_sensor import DepthSensor
 from env.perception.runtime import VisualRuntime
 from env.training_task import Go2Task
+from env.gait import flat_mask
 from rl.algorithms.perceptive_networks import PerceptiveActor, PrivilegedCritic
 from rl.algorithms.ppo import PPO
 from rl.config import TrainConfig
@@ -97,6 +98,7 @@ def main():
     if not (0<args.strength<=1 or (args.strength==0 and args.nominal_gait)):
         p.error('只有显式nominal-gait阶段允许strength=0，不能将其视作域随机化完成')
     torch.set_num_threads(1)
+    if args.nominal_gait:args.free_reference=args.reference
     reference,source,reference_saved=load_policy(args.reference)
     reference.requires_grad_(False)
     free_reference,_,_=load_policy(args.free_reference)
@@ -143,7 +145,9 @@ def main():
                   visual_source=args.visual if not args.resume else None,
                   initialization='195 common + D435i visual' if not args.resume else 'multitask continuation',
                   route_envs=args.route_envs,free_envs=args.free_envs,strength=args.strength,
-                  arguments=vars(args),numerical_failures=0)
+                  arguments=vars(args),numerical_failures=0,
+                  nominal_hip_prior=dict(enabled=args.nominal_gait,limit_rad=route_cfg.training_reward.front_hip_deadband,
+                    application='平地参考标签，执行动作不裁剪，约束服从PPO KL早停'))
     save_json(folder/'metadata.json',metadata);print(f'RUN_DIR={folder}',flush=True)
     tasks=[]
     try:
@@ -183,9 +187,21 @@ def main():
                     target=reference(ref_state)[0]
                     free_ref_state,_=free.inputs(free_reference_visual.latent)
                     free_target=free_reference(free_ref_state)[0]
+                    if args.nominal_gait:
+                        # 只改变平地参考标签，不裁剪执行动作。其余关节保留参考轨迹，姿态项仍服从PPO的KL早停。
+                        target=target.clone();free_target=free_target.clone()
+                        hip_ids=[i for i,name in enumerate(route.robot.joint_names) if name.endswith('_hip_joint')]
+                        local_x=(route.robot.data.root_link_pos_w[:,0]-route.env.scene.env_origins[:,0]
+                                 +route.config.terrain.spawn_x)
+                        straight=flat_mask(route,local_x)&(route.command()[:,2].abs()<.1)
+                        limit=route_cfg.training_reward.front_hip_deadband/route_cfg.action_scale
+                        for i in hip_ids:
+                            target[:,i]=torch.where(straight,target[:,i].clamp(-limit,limit),target[:,i])
+                            free_target[:,i]=free_target[:,i].clamp(-limit,limit)
                     sample['anchor_mu']=torch.cat([target,free_target])
                     sample['anchor_weight']=torch.cat([torch.ones(args.route_envs,device='cuda:0'),
                         args.free_anchor_weight*(((free.command()[:,0]-.3).abs()>.01) | (free.command()[:,2].abs()>.03)).float()])
+                    if args.nominal_gait:sample['anchor_weight'].fill_(1.)
                     rewards=[];dones=[];terms=[];next_critics=[];results=[]
                     for index,(t,v,a) in enumerate(zip(tasks,visuals,action.split([args.route_envs,args.free_envs]))):
                         reward,terminated,truncated,info=t.step(a)

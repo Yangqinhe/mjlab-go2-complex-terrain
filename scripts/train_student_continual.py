@@ -28,6 +28,8 @@ def main():
     parser.add_argument('--visual-source',default=str(VISUAL))
     parser.add_argument('--initial-checkpoint')
     parser.add_argument('--reference-checkpoint',default=str(REFERENCE))
+    parser.add_argument('--nominal-actor-lr',type=float,default=5e-6)
+    parser.add_argument('--nominal-anchor-coef',type=float,default=2.)
     parser.add_argument('--nominal-gait-first',action='store_true',help='先关闭随机化纠正四足步态，数值和视频复核通过才开放随机化')
     parser.add_argument('--require-normal-gait',action='store_true')
     parser.add_argument('--resume-controller',type=Path,help='恢复控制目录，保留选模与课程，并优先评估已完成的训练批次')
@@ -251,6 +253,8 @@ def main():
             previous=json.loads((Path(pending_run)/'metadata.json').read_text())['arguments']
             anchor=previous['anchor_coef'];lr=previous['actor_lr'];stop_fraction=previous['stop_script_fraction']
             freeze=previous['freeze_proprio'];route_envs=previous['route_envs'];free_envs=previous['free_envs']
+    if args.nominal_gait_first:
+        anchor=args.nominal_anchor_coef;lr=args.nominal_actor_lr
     try:
         if best_screen is None:
             best_screen=screen(best,free,'initial',route_config=route)
@@ -301,7 +305,20 @@ def main():
                 state['pending_run']=str(run_dir);save_json(folder/'status.json',state)
                 candidate=str(run_dir/'checkpoints/final.pt')
                 metadata=json.loads((run_dir/'metadata.json').read_text())
-                if metadata['numerical_failures']:raise RuntimeError('训练出现数值异常，拒绝选为下一轮来源')
+                if metadata['numerical_failures']:
+                    # 单批异常必须拒绝，但不应中止整个续训；从上一已评估权重重新采样。
+                    rejection=dict(round=round_id,strength=strength,checkpoint=candidate,selected=False,
+                        screen=dict(passed=False,reason='numerical_failure',reports=[],
+                                    numerical_failures=metadata['numerical_failures']))
+                    state['records'].append(rejection);state.pop('pending_run',None)
+                    failures=state.get('consecutive_numerical_rejections',0)+1
+                    state.update(status='running',consecutive_numerical_rejections=failures,
+                                 next_anchor=anchor,next_lr=lr)
+                    save_json(folder/'status.json',state)
+                    print(f'REJECT_NUMERICAL_CANDIDATE={candidate}',flush=True)
+                    if failures>=3:raise RuntimeError('连续三批发生数值异常，需要检查仿真，未采用异常权重')
+                    continue
+                state['consecutive_numerical_rejections']=0
                 cfg=env_from_dict(json.loads((run_dir/'task_configs.json').read_text())['free'])
                 result=screen(candidate,cfg,label,route_config=route_cfg)
                 errors=0
@@ -370,7 +387,7 @@ def main():
                     best_screen=screen(best,next_free,label+'_next_strength',route_config=next_route)
                     stale=0
             if args.front_posture_finetune:
-                anchor=.2;freeze=True
+                anchor=args.nominal_anchor_coef if args.nominal_gait_first else .2;freeze=True
                 route_envs=args.route_envs;free_envs=args.free_envs
             elif best_screen['route_min_success']<1.:
                 anchor=min(80.,anchor*1.1);freeze=True
