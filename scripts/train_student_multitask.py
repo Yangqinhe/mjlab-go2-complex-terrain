@@ -134,10 +134,11 @@ def main():
         # 恢复195共享控制、本体/速度网络；只接入已适应D435i的视觉分支，不混淆来源。
         state={k.removeprefix('visual_encoder.'):v for k,v in visual['actor'].items() if k.startswith('visual_encoder.')}
         actor.visual_encoder.load_state_dict(state)
+    share_normal_visual=(terrain_reference is not None and all(
+        torch.equal(v.cpu(),reference.visual_encoder.state_dict()[k].cpu())
+        for k,v in actor.visual_encoder.state_dict().items()))
     if terrain_reference is not None:
-        # 平地参考与学生的视觉网络冻结且逐参数一致，可共享实际视觉特征，避免额外相机。
-        assert all(torch.equal(v.cpu(),reference.visual_encoder.state_dict()[k].cpu())
-                   for k,v in actor.visual_encoder.state_dict().items()), '平地视觉参数不一致，不能共享特征'
+        # 编码器不同时各自维护GRU状态，冻结参考不能接收新学生的特征。
         for name in ('action_scale','kp','kd','physics_dt','decimation'):
             assert getattr(terrain_source,name)==getattr(source,name), f'专家控制配置不同：{name}'
     actor.visual_encoder.requires_grad_(False)
@@ -178,6 +179,7 @@ def main():
                   normal_gait_reward_revision='stance_speed_tail_v3',
                   reference_target_revision=('geometry_transition_v2' if args.terrain_reference_transition else 'geometry_v2'),
                   terrain_reference=args.terrain_reference,
+                  normal_reference_visual_shared=share_normal_visual,
                   terrain_reference_sha256=(hashlib.sha256(Path(args.terrain_reference).read_bytes()).hexdigest() if args.terrain_reference else None),
                   nominal_hip_prior=dict(enabled=args.nominal_gait,neutral_target=args.flat_gait_only,limit_rad=route_cfg.training_reward.front_hip_deadband,
                     application='平地参考标签，执行动作不裁剪，约束服从PPO KL早停'))
@@ -200,6 +202,11 @@ def main():
         reference_visual=VisualRuntime(route,route_expert.visual_encoder,
             DepthSensor(route,DepthConfig(**route_expert_saved['env_config'].get('camera',{})),
                 geometry_groups=[0,4] if route_expert_saved['env_config']['terrain'].get('surroundings') else [0],randomize=False))
+        normal_reference_visual=None
+        if terrain_reference is not None and not share_normal_visual:
+            normal_reference_visual=VisualRuntime(route,reference.visual_encoder,
+                DepthSensor(route,DepthConfig(**reference_saved['env_config'].get('camera',{})),
+                    geometry_groups=[0,4],randomize=False))
         torch.manual_seed(args.seed)
         deployment=deployment_config(route);deployment['proprio_only']=False
         save_json(folder/'deployment.json',deployment)
@@ -225,7 +232,8 @@ def main():
                     if terrain_reference is not None:
                         local_x=(route.robot.data.root_link_pos_w[:,0]-route.env.scene.env_origins[:,0]
                                  +route.config.terrain.spawn_x)
-                        normal_state,_=route.inputs(visuals[0].latent)
+                        normal_latent=visuals[0].latent if normal_reference_visual is None else normal_reference_visual.latent
+                        normal_state,_=route.inputs(normal_latent)
                         normal_target=reference(normal_state)[0]
                         # 仅切换辅助标签；执行动作始终来自当前学生，部署不依赖旧专家。
                         terrain_mask=~flat_terrain_mask(route,local_x)
@@ -260,7 +268,9 @@ def main():
                     for index,(t,v,a) in enumerate(zip(tasks,visuals,action.split([args.route_envs,args.free_envs]))):
                         reward,terminated,truncated,info=t.step(a)
                         v.update()
-                        if index==0:reference_visual.update()
+                        if index==0:
+                            reference_visual.update()
+                            if normal_reference_visual is not None:normal_reference_visual.update()
                         else:free_reference_visual.update()
                         _,next_critic=t.inputs()
                         if index==1 and args.critic_task_marker:next_critic[:,-1]=-1.
@@ -284,7 +294,9 @@ def main():
                             sums[index]['falls']+=int(info['fall'][ids].sum())
                             t.reset(ids)
                             v.reset(ids)
-                            if index==0:reference_visual.reset(ids)
+                            if index==0:
+                                reference_visual.reset(ids)
+                                if normal_reference_visual is not None:normal_reference_visual.reset(ids)
                             else:free_reference_visual.reset(ids)
             metrics=agent.update_batch()
             total+=args.horizon*(args.route_envs+args.free_envs)
