@@ -22,6 +22,12 @@ def main():
     print(f'WATCHING={status_path}', flush=True)
     while True:
         try:
+            current = json.loads(Path(args.pointer).read_text())
+            if Path(current['controller']) != folder:
+                return
+            # 同一控制目录可在批次边界恢复；跟随最新PID，避免误报训练已停止。
+            pointer = current
+            pid = pointer['controller_pid']
             state = json.loads(status_path.read_text())
         except json.JSONDecodeError:
             # 控制器可能正在写状态文件，下一次读取完整内容。

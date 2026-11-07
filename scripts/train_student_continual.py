@@ -283,6 +283,21 @@ def main():
         if args.screen_only:
             state.update(status='screen_only_finished');save_json(folder/'status.json',state);return
         while True:
+            if (args.nominal_gait_first and not args.flat_gait_first
+                and args.nominal_max_level<17 and best_screen['passed']):
+                # 已评估最佳权重也能通过当前档位时，直接测下一档，不等待新候选重新通过。
+                previous_level=args.nominal_max_level
+                args.nominal_max_level=next(level for level in (0,6,9,12,15,17) if level>previous_level)
+                state['controller_config']['nominal_max_level']=args.nominal_max_level
+                state.setdefault('terrain_baseline_advances',[]).append(dict(checkpoint=best,
+                    passed_level=previous_level,next_level=args.nominal_max_level,screen=best_screen))
+                next_route,next_free=configured_tasks(strength,route_envs,free_envs,85000+state['round'])
+                best_screen=screen(best,next_free,f'baseline_round_{state["round"]:05d}_level{args.nominal_max_level}',
+                    route_config=next_route)
+                stale=0
+                state.update(best_screen=best_screen,selected_score=best_screen['score'])
+                save_json(folder/'status.json',state)
+                continue
             state['round']+=1;round_id=state['round'];label=f'round_{round_id:05d}'
             route_cfg,free_cfg=configured_tasks(strength,route_envs,free_envs,85000+round_id)
             if not pending_run and not args.front_posture_finetune and not args.require_normal_gait and stale and stale%args.visual_refresh_every==0:
