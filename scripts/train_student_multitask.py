@@ -198,6 +198,7 @@ def main():
         # 保留已经学会的低台阶，逐级加入新高度；不改变地形或最终验收。
         active_levels=[level for level in (0,6,9,12,15,17) if level<=args.training_max_level]
         levels=torch.tensor(active_levels if route_cfg.terrain.obstacles else [0],device='cuda:0')
+        highest_level=int(levels.max().item())
         terrain.terrain_levels[:]=levels[torch.arange(args.route_envs,device='cuda:0')%len(levels)]
         terrain.env_origins[:]=terrain.terrain_origins[terrain.terrain_levels,terrain.terrain_types]
         route.reset()
@@ -221,6 +222,7 @@ def main():
         begin=time.monotonic()
         for iteration in range(start+1,start+args.iterations+1):
             sums=[dict(reward=0.,episodes=0,successes=0,falls=0,width_reward=0.,slip_reward=0.,touchdown_velocity_reward=0.,stance_speed_reward=0.,support_deficit_reward=0.,terrain_reference_fraction=0.,reference_transition_fraction=0.) for _ in tasks]
+            highest_counts=dict(episodes=0,successes=0,falls=0)
             for _ in range(args.horizon):
                 with torch.no_grad():
                     states=[];critics=[]
@@ -299,6 +301,12 @@ def main():
                             sums[index]['episodes']+=len(ids)
                             sums[index]['successes']+=int(info['success'][ids].sum())
                             sums[index]['falls']+=int(info['fall'][ids].sum())
+                            if index==0:
+                                # reset前统计真实档位，避免把低台阶成功算作新高度的学习效果。
+                                highest_ids=ids[terrain.terrain_levels[ids]==highest_level]
+                                highest_counts['episodes']+=len(highest_ids)
+                                highest_counts['successes']+=int(info['success'][highest_ids].sum())
+                                highest_counts['falls']+=int(info['fall'][highest_ids].sum())
                             t.reset(ids)
                             v.reset(ids)
                             if index==0:
@@ -312,6 +320,10 @@ def main():
                      free_tracking_reward=sums[1]['reward']/args.horizon,
                      route_episodes=sums[0]['episodes'],route_successes=sums[0]['successes'],
                      free_episodes=sums[1]['episodes'],free_successes=sums[1]['successes'],
+                     route_max_level=highest_level,
+                     route_max_level_episodes=highest_counts['episodes'],
+                     route_max_level_successes=highest_counts['successes'],
+                     route_max_level_falls=highest_counts['falls'],
                      numerical_failures=sum(t.numerical_failures for t in tasks),**metrics)
             if args.nominal_gait:
                 for name,index in (('route',0),('free',1)):

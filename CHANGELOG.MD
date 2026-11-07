@@ -1002,3 +1002,11 @@ README开头将195明确标为历史路线/接触验收，保留240/240历史结
 - 25/50/75/100四个候选全部正常平地专项通过；12cm完成率依次20/20、14/20、18/20、15/20，速度RMSE0.08087/0.12499/0.09533/0.10262m/s，最长腾空80/180/120/200ms。只有25候选同时满足完整路线、速度及步态门槛，不能根据监督损失下降或最后编号直接选最终检查点。
 - 选择记录 outputs/nominal_gait_goal_audits/visual1595_refresh/selection.json 固定25候选SHA256=f5c4bbb4853bda0178edabd669645aed9b99ad222855ab26065a99480a901188，仅用于标称课程续训，未当作最终模型。其余候选及实际报告保留，旧视觉任务已结束并记录后继15cm控制器。
 - 15cm首批PPO继续运行，未开启域随机化，完整正确步态goal尚未完成。
+
+
+## 2026-11-08：15cm首批最终2/20，增加最高档位训练计数
+
+- 首批1645最终权重3cm20/20、正常平地专项通过；15cm2/20、vx RMSE0.21620m/s、最长220ms，仍未通过。起点1/20与本次2/20不足以确认稳定改善，先检查保存的1620中途候选，再继续训练。
+- train_student_multitask.py仅增加日志字段route_max_level、route_max_level_episodes/successes/falls，按reset前实际地形等级统计最高训练档位，避免将低台阶成功误称为15cm进展。未修改训练动作、奖励、采样或验收；原文件备份 outputs/nominal_gait_goal_audits/source_train_student_multitask_before_level_logging.py。
+- 16环境8次实际GPU运行检查记录最高level12的3回合3跌倒，而全部路线4回合，证明高低档计数分开；数值异常0。检查使用actor_lr=0，actor权重逐张量不变（除初始化log_std），该检查权重不采用。证据 highest_level_logging_smoke_verification.json，后续主训练新批次自动加载新增日志。
+- 域随机化关闭，原权重和全部outputs保留，完整正确步态goal未完成。
