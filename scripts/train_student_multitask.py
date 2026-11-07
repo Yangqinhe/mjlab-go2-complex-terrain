@@ -68,6 +68,8 @@ def task_configs(source, strength, route_envs, free_envs, seed, flat_gait=False)
             cfg.terrain.seed=56000
         # 标称阶段用审计同样的单布局/窄侧墙平地，避免视觉场景差异掩盖滑移。
         free=nominal_flat_training_config(route,free_envs,seed+1)
+        # 平地子任务训练接触；及时重置，避免长时间侧漂碰到装饰物污染数据。
+        free.episode_seconds=12.5
         free.command.vx=(.3,.3);free.command.wz=(0.,0.)
         free.command.stop_fraction=0.;free.command.anchor_fraction=0.
         free.command.stop_script_fraction=0.
