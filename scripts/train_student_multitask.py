@@ -12,7 +12,7 @@ import time
 import torch
 
 from domain_randomization.config import d435i_scene_config
-from env.commands import free_training_config
+from env.commands import free_training_config, nominal_flat_training_config
 from env.perception.config import DepthConfig
 from env.perception.depth_sensor import DepthSensor
 from env.perception.runtime import VisualRuntime
@@ -66,6 +66,8 @@ def task_configs(source, strength, route_envs, free_envs, seed, flat_gait=False)
             cfg.randomization.enabled=False
             cfg.camera.pitch_down_degrees=25.
             cfg.terrain.seed=56000
+        # 标称阶段用审计同样的单布局/窄侧墙平地，避免视觉场景差异掩盖滑移。
+        free=nominal_flat_training_config(route,free_envs,seed+1)
         free.command.vx=(.3,.3);free.command.wz=(0.,0.)
         free.command.stop_fraction=0.;free.command.anchor_fraction=0.
         free.command.stop_script_fraction=0.
