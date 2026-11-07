@@ -152,7 +152,7 @@ def main():
                   initialization='195 common + D435i visual' if not args.resume else 'multitask continuation',
                   route_envs=args.route_envs,free_envs=args.free_envs,strength=args.strength,
                   arguments=vars(args),numerical_failures=0,
-                  normal_gait_reward_revision='touchdown_velocity_v2',
+                  normal_gait_reward_revision='stance_speed_tail_v3',
                   nominal_hip_prior=dict(enabled=args.nominal_gait,neutral_target=args.flat_gait_only,limit_rad=route_cfg.training_reward.front_hip_deadband,
                     application='平地参考标签，执行动作不裁剪，约束服从PPO KL早停'))
     save_json(folder/'metadata.json',metadata);print(f'RUN_DIR={folder}',flush=True)
@@ -180,7 +180,7 @@ def main():
                              torch.full((args.free_envs,1),args.free_std_scale,device='cuda:0')])
         begin=time.monotonic()
         for iteration in range(start+1,start+args.iterations+1):
-            sums=[dict(reward=0.,episodes=0,successes=0,falls=0,width_reward=0.,slip_reward=0.,touchdown_velocity_reward=0.) for _ in tasks]
+            sums=[dict(reward=0.,episodes=0,successes=0,falls=0,width_reward=0.,slip_reward=0.,touchdown_velocity_reward=0.,stance_speed_reward=0.) for _ in tasks]
             for _ in range(args.horizon):
                 with torch.no_grad():
                     states=[];critics=[]
@@ -233,6 +233,8 @@ def main():
                             sums[index]['slip_reward']+=info['terms']['slip'].mean().item()
                             touchdown_reward=info['terms'].get('normal_touchdown_velocity')
                             if touchdown_reward is not None:sums[index]['touchdown_velocity_reward']+=touchdown_reward.mean().item()
+                            stance_speed_reward=info['terms'].get('normal_stance_speed')
+                            if stance_speed_reward is not None:sums[index]['stance_speed_reward']+=stance_speed_reward.mean().item()
                         ids=done.nonzero(as_tuple=False).flatten()
                         if len(ids):
                             sums[index]['episodes']+=len(ids)
@@ -255,6 +257,7 @@ def main():
                     row[name+'_width_reward']=sums[index]['width_reward']/args.horizon
                     row[name+'_slip_reward']=sums[index]['slip_reward']/args.horizon
                     row[name+'_touchdown_velocity_reward']=sums[index]['touchdown_velocity_reward']/args.horizon
+                    row[name+'_stance_speed_reward']=sums[index]['stance_speed_reward']/args.horizon
             append_csv(folder/'metrics.csv',row)
             with (folder/'train.log').open('a') as f:f.write(json.dumps(row)+'\n')
             if iteration==start+1 or (iteration-start)%10==0:print(json.dumps(row),flush=True)
