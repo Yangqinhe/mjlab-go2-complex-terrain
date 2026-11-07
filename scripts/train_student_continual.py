@@ -29,6 +29,7 @@ def main():
     parser.add_argument('--initial-checkpoint')
     parser.add_argument('--reference-checkpoint',default=str(REFERENCE))
     parser.add_argument('--flat-gait-first',action='store_true')
+    parser.add_argument('--nominal-max-level',type=int,choices=(0,6,9,12,15,17),default=17)
     parser.add_argument('--flat-anchor-coef',type=float,default=20.)
     parser.add_argument('--nominal-actor-lr',type=float,default=5e-6)
     parser.add_argument('--nominal-anchor-coef',type=float,default=2.)
@@ -59,7 +60,7 @@ def main():
         args.flat_gait_first=recovered.get('nominal_substage')=='flat'
         args.require_normal_gait=recovered.get('require_normal_gait',False)
         for key,value in recovered.get('controller_config',{}).items():
-            if key in ('updates_per_round','nominal_actor_lr','nominal_anchor_coef','flat_anchor_coef','route_envs','free_envs'):
+            if key in ('updates_per_round','nominal_actor_lr','nominal_anchor_coef','flat_anchor_coef','route_envs','free_envs','nominal_max_level'):
                 setattr(args,key,value)
         args.reference_checkpoint=recovered['reference']
         args.visual_source=recovered['visual_source']
@@ -118,7 +119,7 @@ def main():
                    phase='nominal_gait' if args.nominal_gait_first else 'training',
                    nominal_substage='flat' if args.flat_gait_first else 'complex',
                    controller_config={key:getattr(args,key) for key in ('updates_per_round','nominal_actor_lr',
-                       'nominal_anchor_coef','flat_anchor_coef','route_envs','free_envs')},
+                       'nominal_anchor_coef','flat_anchor_coef','route_envs','free_envs','nominal_max_level')},
                    visual_source=args.visual_source,folder=str(folder),records=[],
                    goal=('先在标称环境纠正四足接触与落脚；数值和视频复核均通过后再训练域随机化' if args.nominal_gait_first
                          else '完整域随机化下六档固定120+独立120路线全完成、速度/60ms步态通过，33项变速停车及20/35/50度边界通过'))
@@ -183,7 +184,8 @@ def main():
                 command_pass_rate=None,stop_passes=0,reports=[stance['report']],passed=stance['passed'],
                 note='标称平地中间课程，复杂地形尚未复核')
         reports=[];paths=[]
-        for level in (0,17):
+        screen_levels=sorted({0,args.nominal_max_level}) if args.nominal_gait_first else (0,17)
+        for level in screen_levels:
             path,report=evaluate_route(ckpt,level,[54000],label+f'_route{level}',route_config=route_config)
             reports.append(report);paths.append(str(path))
         if args.nominal_gait_first:
@@ -192,7 +194,7 @@ def main():
             path,command=evaluate_commands(ckpt,cfg,label+'_commands');paths.append(str(path))
         stop=[r['stop'] for r in command['records'] if r['scenario']=='stop']
         gait_safe=all(gait_passed(r) for r in reports)
-        score=(100*min(r['success_rate'] for r in reports)+30*sum(r['success_rate'] for r in reports)/2
+        score=(100*min(r['success_rate'] for r in reports)+30*sum(r['success_rate'] for r in reports)/len(reports)
                -10*sum(r['vx_rmse'] for r in reports)-10*sum(gait_error(r) for r in reports)
                +20*(command['pass_rate'] or 0.)-10*sum(r['maximum_drift_m'] for r in stop)/max(len(stop),1))
         if not gait_safe:score-=1000.
@@ -309,7 +311,7 @@ def main():
                        '--std',.02 if args.front_posture_finetune else .04,'--stop-script-fraction',stop_fraction,'--seed',85000+round_id]
             if args.front_posture_finetune:
                 arguments+=['--front-posture-scale',1. if args.flat_gait_first else min(1.,.1*round_id),'--free-anchor-weight',0.]
-            if args.nominal_gait_first:arguments+=['--nominal-gait']
+            if args.nominal_gait_first:arguments+=['--nominal-gait','--training-max-level',args.nominal_max_level]
             if args.flat_gait_first:arguments+=['--flat-gait-only','--route-std-scale',2.]
             if args.require_normal_gait:
                 arguments+=['--normal-foot-scale',1.,'--free-anchor-weight',0.]
@@ -355,6 +357,18 @@ def main():
             if accepted:
                 best=candidate;best_screen=result;stale=0
             else:stale+=1
+            if result['passed'] and args.nominal_gait_first and not args.flat_gait_first and args.nominal_max_level<17:
+                # 当前高度必须同时保住正常平地步态，才增加训练难度；最终仍验收全部六档。
+                best=candidate
+                previous_level=args.nominal_max_level
+                args.nominal_max_level=next(level for level in (0,6,9,12,15,17) if level>previous_level)
+                state['controller_config']['nominal_max_level']=args.nominal_max_level
+                record['terrain_curriculum']=dict(passed_level=previous_level,next_level=args.nominal_max_level)
+                best_screen=screen(best,free_cfg,label+'_next_terrain_baseline',route_config=route_cfg)
+                stale=0
+                state.update(selected_checkpoint=best,best_screen=best_screen,selected_score=best_screen['score'])
+                save_json(folder/'status.json',state)
+                continue
             if result['passed']:
                 validation=full_validation(candidate,cfg,label,final=strength==1.,route_config=route_cfg)
                 record['validation']=validation

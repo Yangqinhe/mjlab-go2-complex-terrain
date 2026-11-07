@@ -78,6 +78,7 @@ def main():
     p.add_argument('--resume')
     p.add_argument('--nominal-gait',action='store_true')
     p.add_argument('--flat-gait-only',action='store_true')
+    p.add_argument('--training-max-level',type=int,choices=(0,6,9,12,15,17),default=17)
     p.add_argument('--normal-foot-scale',type=float,default=0.)
     p.add_argument('--front-posture-scale',type=float,default=0.)
     p.add_argument('--reference',default=str(REFERENCE))
@@ -160,7 +161,9 @@ def main():
         route=Go2Task(route_cfg,curriculum=False);tasks.append(route)
         free=Go2Task(free_cfg,curriculum=False);tasks.append(free)
         terrain=route.env.scene.terrain
-        levels=torch.tensor([0,6,9,12,15,17] if route_cfg.terrain.obstacles else [0],device='cuda:0')
+        # 保留已经学会的低台阶，逐级加入新高度；不改变地形或最终验收。
+        active_levels=[level for level in (0,6,9,12,15,17) if level<=args.training_max_level]
+        levels=torch.tensor(active_levels if route_cfg.terrain.obstacles else [0],device='cuda:0')
         terrain.terrain_levels[:]=levels[torch.arange(args.route_envs,device='cuda:0')%len(levels)]
         terrain.env_origins[:]=terrain.terrain_origins[terrain.terrain_levels,terrain.terrain_types]
         route.reset()
