@@ -71,9 +71,12 @@ def main():
         agent.actor_optimizer.param_groups[0]['lr']=args.learning_rate
         if args.reference_actions:
             agent.actor_optimizer.param_groups[1]['lr']=args.control_lr
-    distill=DistillConfig(burn_in=args.burn_in, visual_steps=args.visual_steps,
+    distill=DistillConfig(num_envs=args.num_envs, burn_in=args.burn_in, visual_steps=args.visual_steps,
                          sequence_batch=args.sequence_batch, action_coef=1., latent_coef=.1,
-                         freeze_common=True, held_terrain_guide=True)
+                         visual_lr=args.learning_rate, common_lr=args.control_lr if args.reference_actions else 0.,
+                         teacher_mix=args.teacher_mix, training_levels=tuple(args.training_levels),
+                         freeze_common=not args.reference_actions, freeze_proprio=True,
+                         held_terrain_guide=not args.reference_actions)
     config.num_envs, config.seed=args.num_envs, args.seed
     config.randomization.enabled=False
     config.terrain.seed=56000
@@ -81,6 +84,7 @@ def main():
     metadata=dict(status='running', algorithm=algorithm, parent=args.resume,
                   arguments=vars(args), randomization_enabled=False)
     save_json(folder/'metadata.json', metadata)
+    save_json(folder/'distillation.json',asdict(distill))
     print('RUN_DIR='+str(folder), flush=True)
     tasks=[]
     try:
