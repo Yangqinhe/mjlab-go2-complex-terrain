@@ -28,7 +28,7 @@ VISUAL=ROOT/'outputs/20261106_213606_439946_d435i_visual_adaptation_seed82200/ch
 FREE_REFERENCE=ROOT/'outputs/20261106_222656_882705_student_ppo_seed81110/checkpoints/final.pt'
 
 
-def task_configs(source, strength, route_envs, free_envs, seed):
+def task_configs(source, strength, route_envs, free_envs, seed, flat_gait=False):
     route=d435i_scene_config(source)
     route.num_envs=route_envs;route.seed=seed;route.terrain.seed=seed+1000
     upper=min(50.,23.333333333333+26.666666666667*strength)
@@ -67,6 +67,9 @@ def task_configs(source, strength, route_envs, free_envs, seed):
         free.command.vx=(.3,.3);free.command.wz=(0.,0.)
         free.command.stop_fraction=0.;free.command.anchor_fraction=0.
         free.command.stop_script_fraction=0.
+    if flat_gait:
+        # 这是标称步态课程的第一步，不替代后续复杂地形验收。
+        route=deepcopy(free);route.num_envs=route_envs;route.seed=seed
     return route,free
 
 
@@ -74,6 +77,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--resume')
     p.add_argument('--nominal-gait',action='store_true')
+    p.add_argument('--flat-gait-only',action='store_true')
     p.add_argument('--normal-foot-scale',type=float,default=0.)
     p.add_argument('--front-posture-scale',type=float,default=0.)
     p.add_argument('--reference',default=str(REFERENCE))
@@ -97,6 +101,7 @@ def main():
     args=p.parse_args()
     if not (0<args.strength<=1 or (args.strength==0 and args.nominal_gait)):
         p.error('只有显式nominal-gait阶段允许strength=0，不能将其视作域随机化完成')
+    if args.flat_gait_only and not (args.nominal_gait and args.strength==0):p.error('flat-gait-only仅用于关闭随机化的标称步态课程')
     torch.set_num_threads(1)
     if args.nominal_gait:args.free_reference=args.reference
     reference,source,reference_saved=load_policy(args.reference)
@@ -129,7 +134,7 @@ def main():
         for group in agent.critic_optimizer.param_groups:group['lr']=training.critic_lr
         agent.actor_optimizer.state.pop(agent.actor.log_std,None)
     with torch.no_grad():agent.actor.log_std.add_(torch.log(torch.tensor(args.std)/agent.actor.log_std.exp().mean()))
-    route_cfg,free_cfg=task_configs(source,args.strength,args.route_envs,args.free_envs,args.seed)
+    route_cfg,free_cfg=task_configs(source,args.strength,args.route_envs,args.free_envs,args.seed,flat_gait=args.flat_gait_only)
     if not args.nominal_gait:free_cfg.command.stop_script_fraction=args.stop_script_fraction
     if args.front_posture_scale:
         from env.posture import configure_front_posture
@@ -146,7 +151,7 @@ def main():
                   initialization='195 common + D435i visual' if not args.resume else 'multitask continuation',
                   route_envs=args.route_envs,free_envs=args.free_envs,strength=args.strength,
                   arguments=vars(args),numerical_failures=0,
-                  nominal_hip_prior=dict(enabled=args.nominal_gait,limit_rad=route_cfg.training_reward.front_hip_deadband,
+                  nominal_hip_prior=dict(enabled=args.nominal_gait,neutral_target=args.flat_gait_only,limit_rad=route_cfg.training_reward.front_hip_deadband,
                     application='平地参考标签，执行动作不裁剪，约束服从PPO KL早停'))
     save_json(folder/'metadata.json',metadata);print(f'RUN_DIR={folder}',flush=True)
     tasks=[]
@@ -154,7 +159,7 @@ def main():
         route=Go2Task(route_cfg,curriculum=False);tasks.append(route)
         free=Go2Task(free_cfg,curriculum=False);tasks.append(free)
         terrain=route.env.scene.terrain
-        levels=torch.tensor([0,6,9,12,15,17],device='cuda:0')
+        levels=torch.tensor([0,6,9,12,15,17] if route_cfg.terrain.obstacles else [0],device='cuda:0')
         terrain.terrain_levels[:]=levels[torch.arange(args.route_envs,device='cuda:0')%len(levels)]
         terrain.env_origins[:]=terrain.terrain_origins[terrain.terrain_levels,terrain.terrain_types]
         route.reset()
@@ -198,6 +203,9 @@ def main():
                         for i in hip_ids:
                             target[:,i]=torch.where(straight,target[:,i].clamp(-limit,limit),target[:,i])
                             free_target[:,i]=free_target[:,i].clamp(-limit,limit)
+                        if args.flat_gait_only:
+                            # 平地先学接近默认姿态的髋目标，其余关节仍参考已有步态；不是执行动作限幅。
+                            target[:,hip_ids]=0.;free_target[:,hip_ids]=0.
                     sample['anchor_mu']=torch.cat([target,free_target])
                     sample['anchor_weight']=torch.cat([torch.ones(args.route_envs,device='cuda:0'),
                         args.free_anchor_weight*(((free.command()[:,0]-.3).abs()>.01) | (free.command()[:,2].abs()>.03)).float()])

@@ -28,6 +28,8 @@ def main():
     parser.add_argument('--visual-source',default=str(VISUAL))
     parser.add_argument('--initial-checkpoint')
     parser.add_argument('--reference-checkpoint',default=str(REFERENCE))
+    parser.add_argument('--flat-gait-first',action='store_true')
+    parser.add_argument('--flat-anchor-coef',type=float,default=20.)
     parser.add_argument('--nominal-actor-lr',type=float,default=5e-6)
     parser.add_argument('--nominal-anchor-coef',type=float,default=2.)
     parser.add_argument('--nominal-gait-first',action='store_true',help='先关闭随机化纠正四足步态，数值和视频复核通过才开放随机化')
@@ -39,6 +41,7 @@ def main():
     parser.add_argument('--visual-refresh-every',type=int,default=3)
     parser.add_argument('--screen-only',action='store_true',help='只用于候选初始化对比，不是持续训练默认行为')
     args=parser.parse_args()
+    if args.flat_gait_first:args.nominal_gait_first=True
     if args.nominal_gait_first:args.front_posture_finetune=True
     if args.front_posture_finetune and not (args.initial_checkpoint or args.resume_controller):
         parser.error('前腿微调必须指定作为起点的完整学生检查点')
@@ -53,7 +56,11 @@ def main():
         save_json(history/f'{datetime.now():%Y%m%d_%H%M%S_%f}_before_resume.json',recovered)
         args.front_posture_finetune=recovered.get('front_posture_finetune',False)
         args.nominal_gait_first=recovered.get('nominal_gait_first',False)
+        args.flat_gait_first=recovered.get('nominal_substage')=='flat'
         args.require_normal_gait=recovered.get('require_normal_gait',False)
+        for key,value in recovered.get('controller_config',{}).items():
+            if key in ('updates_per_round','nominal_actor_lr','nominal_anchor_coef','flat_anchor_coef','route_envs','free_envs'):
+                setattr(args,key,value)
         args.reference_checkpoint=recovered['reference']
         args.visual_source=recovered['visual_source']
         pending_run=recovered.get('pending_run')
@@ -73,7 +80,7 @@ def main():
     initial_strength=recovered['strength'] if recovered else (args.initial_strength if args.initial_strength is not None
         else (0. if args.nominal_gait_first else 1. if args.front_posture_finetune else .25))
     def configured_tasks(strength,route_envs,free_envs,seed):
-        route,free=task_configs(source,strength,route_envs,free_envs,seed)
+        route,free=task_configs(source,strength,route_envs,free_envs,seed,flat_gait=args.flat_gait_first)
         if args.front_posture_finetune:
             from env.posture import configure_front_posture
             for cfg in (route,free):configure_front_posture(cfg,1.)
@@ -109,6 +116,9 @@ def main():
                    reference=str(reference_path),reference_sha256=hashlib.sha256(reference_path.read_bytes()).hexdigest(),
                    nominal_gait_first=args.nominal_gait_first,require_normal_gait=args.require_normal_gait,
                    phase='nominal_gait' if args.nominal_gait_first else 'training',
+                   nominal_substage='flat' if args.flat_gait_first else 'complex',
+                   controller_config={key:getattr(args,key) for key in ('updates_per_round','nominal_actor_lr',
+                       'nominal_anchor_coef','flat_anchor_coef','route_envs','free_envs')},
                    visual_source=args.visual_source,folder=str(folder),records=[],
                    goal=('先在标称环境纠正四足接触与落脚；数值和视频复核均通过后再训练域随机化' if args.nominal_gait_first
                          else '完整域随机化下六档固定120+独立120路线全完成、速度/60ms步态通过，33项变速停车及20/35/50度边界通过'))
@@ -167,6 +177,11 @@ def main():
         return dict(passed=passed,error=error,report=str(output))
 
     def screen(ckpt,cfg,label,route_config=None):
+        if args.flat_gait_first:
+            stance=stance_check(ckpt,label)
+            return dict(score=-30*stance['error'],front_stance=stance,route_pass=False,route_min_success=None,
+                command_pass_rate=None,stop_passes=0,reports=[stance['report']],passed=stance['passed'],
+                note='标称平地中间课程，复杂地形尚未复核')
         reports=[];paths=[]
         for level in (0,17):
             path,report=evaluate_route(ckpt,level,[54000],label+f'_route{level}',route_config=route_config)
@@ -189,6 +204,9 @@ def main():
                     passed=all(route_pass(r) for r in reports) and (args.nominal_gait_first or command['pass_rate']==1.) and stance['passed'])
 
     def full_validation(ckpt,cfg,label,final=False,route_config=None):
+        if args.flat_gait_first:
+            normal=stance_check(ckpt,label+'_flat_independent',seeds=[56300,56301,56302])
+            return dict(passed=normal['passed'],normal_gait=normal,scope='flat_curriculum_only',randomization_enabled=False)
         paths=[]
         for level in (0,6,9,12,15,17):
             path,report=evaluate_route(ckpt,level,list(range(54000,54005)),label+f'_selection{level}',route_config=route_config)
@@ -247,14 +265,14 @@ def main():
             if record['selected']:break
             stale+=1
         stop_fraction=state.get('next_stop_fraction',stop_fraction)
-        freeze=state.get('next_freeze_proprio',args.front_posture_finetune or best_screen['route_min_success']<1.)
+        freeze=state.get('next_freeze_proprio',args.front_posture_finetune or (best_screen['route_min_success'] is not None and best_screen['route_min_success']<1.))
         route_envs=state.get('next_route_envs',route_envs);free_envs=state.get('next_free_envs',free_envs)
         if pending_run:
             previous=json.loads((Path(pending_run)/'metadata.json').read_text())['arguments']
             anchor=previous['anchor_coef'];lr=previous['actor_lr'];stop_fraction=previous['stop_script_fraction']
             freeze=previous['freeze_proprio'];route_envs=previous['route_envs'];free_envs=previous['free_envs']
     if args.nominal_gait_first:
-        anchor=args.nominal_anchor_coef;lr=args.nominal_actor_lr
+        anchor=args.flat_anchor_coef if args.flat_gait_first else args.nominal_anchor_coef;lr=args.nominal_actor_lr
     try:
         if best_screen is None:
             best_screen=screen(best,free,'initial',route_config=route)
@@ -292,6 +310,7 @@ def main():
             if args.front_posture_finetune:
                 arguments+=['--front-posture-scale',min(1.,.1*round_id),'--free-anchor-weight',0.]
             if args.nominal_gait_first:arguments+=['--nominal-gait']
+            if args.flat_gait_first:arguments+=['--flat-gait-only']
             if args.require_normal_gait:
                 arguments+=['--normal-foot-scale',1.,'--free-anchor-weight',0.]
             if freeze:arguments+=['--freeze-proprio']
@@ -341,6 +360,19 @@ def main():
                 record['validation']=validation
                 if validation['passed']:
                     best=candidate;best_screen=result
+                    if args.flat_gait_first:
+                        # 平地只是中间课程。仍关闭随机化，回到完整标称复杂地形并重新测基线。
+                        state['flat_gait_validation']=dict(checkpoint=best,validation=validation)
+                        args.flat_gait_first=False
+                        reference_path=Path(best);ref=torch.load(best,map_location='cpu',weights_only=False)
+                        source=env_from_dict(ref['env_config']);anchor=args.nominal_anchor_coef;stale=0
+                        next_route,next_free=configured_tasks(0.,route_envs,free_envs,85000+round_id)
+                        best_screen=screen(best,next_free,label+'_nominal_complex_baseline',route_config=next_route)
+                        state.update(status='running',nominal_substage='complex',selected_checkpoint=best,
+                            reference=str(reference_path),reference_sha256=hashlib.sha256(reference_path.read_bytes()).hexdigest(),
+                            best_screen=best_screen,selected_score=best_screen['score'],next_anchor=anchor,next_lr=lr)
+                        save_json(folder/'status.json',state)
+                        continue
                     if args.nominal_gait_first:
                         checksum=hashlib.sha256(Path(best).read_bytes()).hexdigest()
                         state.update(status='nominal_gait_passed_needs_visual_review',checkpoint=best,
@@ -387,7 +419,7 @@ def main():
                     best_screen=screen(best,next_free,label+'_next_strength',route_config=next_route)
                     stale=0
             if args.front_posture_finetune:
-                anchor=args.nominal_anchor_coef if args.nominal_gait_first else .2;freeze=True
+                anchor=(args.flat_anchor_coef if args.flat_gait_first else args.nominal_anchor_coef) if args.nominal_gait_first else .2;freeze=True
                 route_envs=args.route_envs;free_envs=args.free_envs
             elif best_screen['route_min_success']<1.:
                 anchor=min(80.,anchor*1.1);freeze=True
