@@ -56,4 +56,5 @@ class DistillConfig:
     action_noise_std: float = 0.
     copy_teacher_common: bool = False
     freeze_common: bool = False
+    held_terrain_guide: bool = False
     freeze_proprio: bool = False

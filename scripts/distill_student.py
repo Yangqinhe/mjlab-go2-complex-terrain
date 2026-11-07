@@ -43,8 +43,11 @@ def main():
     parser.add_argument('--action-noise-std', type=float, default=0.)
     parser.add_argument('--copy-teacher-common', action='store_true', help='恢复后将共享网络重置为教师参数')
     parser.add_argument('--freeze-common', action='store_true', help='本阶段只训练视觉编码器')
+    parser.add_argument('--held-terrain-guide', action='store_true', help='用冻结学生控制网络和按采图时序保持的教师地形编码生成标签及引导动作')
     parser.add_argument('--freeze-proprio', action='store_true', help='固定历史编码与速度估计，只适配其余模块')
     args = parser.parse_args()
+    if args.held_terrain_guide and (not args.resume or not args.freeze_common or args.copy_teacher_common):
+        parser.error('held-terrain-guide需恢复学生并冻结保留共享控制网络')
     torch.set_num_threads(1)
     teacher, env_config, checkpoint = load_policy(args.teacher, args.device)
     teacher.requires_grad_(False)
@@ -63,7 +66,8 @@ def main():
                            training_levels=tuple(args.training_levels) if args.training_levels else None,
                            teacher_mix=args.teacher_mix, copy_teacher_common=args.copy_teacher_common,
                            freeze_common=args.freeze_common, freeze_proprio=args.freeze_proprio,
-                           action_noise_std=args.action_noise_std)
+                           action_noise_std=args.action_noise_std,
+                           held_terrain_guide=args.held_terrain_guide)
     if args.latent_coef is not None:
         config.latent_coef = args.latent_coef
     if args.action_coef is not None:
@@ -108,7 +112,8 @@ def main():
     save_json(folder/'distillation.json', asdict(config))
     metadata = dict(teacher=args.teacher, parent=args.resume, status='running',
                     parent_stage=saved['stage'] if saved else None, seed=env_config.seed,
-                    terrain_seed=env_config.terrain.seed)
+                    terrain_seed=env_config.terrain.seed,
+                    label_policy=('frozen_student_held_teacher_terrain' if config.held_terrain_guide else 'teacher'))
     save_json(folder/'metadata.json', metadata)
     print(f'RUN_DIR={folder}', flush=True)
     task = Go2Task(env_config, args.device)
@@ -140,7 +145,8 @@ def main():
             beta = (config.teacher_mix if config.teacher_mix is not None else
                     min(1., max(0., 1-(iteration-args.warmup)/100)))
             batch, sampling = collect_sequences(task, visual, teacher, student,
-                (config.visual_steps+config.burn_in)*5, beta, config.action_noise_std)
+                (config.visual_steps+config.burn_in)*5, beta, config.action_noise_std,
+                held_terrain_guide=config.held_terrain_guide)
             metrics = update_sequences(student, agent.actor_optimizer, batch, config)
             row = dict(iteration=iteration, beta=beta, action_noise_std=config.action_noise_std,
                        elapsed_seconds=time.monotonic()-began,
@@ -153,7 +159,7 @@ def main():
                 save_checkpoint(folder/'checkpoints/latest.pt', agent, iteration,
                                 env_config, training, 'distill', teacher=args.teacher,
                                 deployment=deployment, task=task)
-                if config.action_coef == 0:
+                if config.action_coef == 0 or config.held_terrain_guide:
                     shutil.copyfile(folder/'checkpoints/latest.pt',folder/f'checkpoints/iteration_{iteration}.pt')
         save_checkpoint(folder/'checkpoints/final.pt', agent, iteration,
                         env_config, training, 'distill', teacher=args.teacher,

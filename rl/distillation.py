@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 
 @torch.no_grad()
-def collect_sequences(task, visual, teacher, student, steps, beta, action_noise_std=0.):
+def collect_sequences(task, visual, teacher, student, steps, beta, action_noise_std=0., held_terrain_guide=False):
     n, device = task.config.num_envs, task.device
     # 图像仅在实际更新时入库；策略步只保存两帧索引，避免50Hz重复存整幅图。
     frames = [visual.pair[:, 0].clone(), visual.pair[:, 1].clone()]
@@ -16,11 +16,19 @@ def collect_sequences(task, visual, teacher, student, steps, beta, action_noise_
     tick = torch.ones(n, dtype=torch.bool, device=device)
     reset = torch.zeros_like(tick)
     rows = []
+    held_teacher_z = torch.zeros(n, 64, device=device) if held_terrain_guide else None
     successes, episodes = 0, 0
     for _ in range(steps):
         states, critic = task.inputs()
-        teacher_mu = teacher(states)[0]
-        teacher_z = teacher.terrain_encoder(states[:, 495:])
+        if held_terrain_guide:
+            # 标签与实际采图/reset时序一致，冻结学生控制网络生成特权引导动作。
+            fresh_z = teacher.terrain_encoder(states[:, 495:])
+            held_teacher_z = torch.where(tick[:, None], fresh_z, held_teacher_z)
+            teacher_z = held_teacher_z
+            teacher_mu = student(torch.cat([states[:, :495], teacher_z], -1))[0]
+        else:
+            teacher_mu = teacher(states)[0]
+            teacher_z = teacher.terrain_encoder(states[:, 495:])
         student_states = torch.cat([states[:, :495], visual.latent], -1)
         student_mu = student(student_states)[0]
         rows.append(dict(proprio=states[:, :45].clone(), history=states[:, 45:495].clone(),
