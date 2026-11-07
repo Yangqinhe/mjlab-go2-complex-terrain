@@ -308,9 +308,9 @@ def main():
                        '--strength',strength,'--anchor-coef',anchor,'--actor-lr',lr,
                        '--std',.02 if args.front_posture_finetune else .04,'--stop-script-fraction',stop_fraction,'--seed',85000+round_id]
             if args.front_posture_finetune:
-                arguments+=['--front-posture-scale',min(1.,.1*round_id),'--free-anchor-weight',0.]
+                arguments+=['--front-posture-scale',1. if args.flat_gait_first else min(1.,.1*round_id),'--free-anchor-weight',0.]
             if args.nominal_gait_first:arguments+=['--nominal-gait']
-            if args.flat_gait_first:arguments+=['--flat-gait-only']
+            if args.flat_gait_first:arguments+=['--flat-gait-only','--route-std-scale',2.]
             if args.require_normal_gait:
                 arguments+=['--normal-foot-scale',1.,'--free-anchor-weight',0.]
             if freeze:arguments+=['--freeze-proprio']

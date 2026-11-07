@@ -36,6 +36,7 @@ def configure_normal_gait(config, scale):
     configure_front_posture(config, scale)
     config.training_reward.all_hip_deviation = -.2*scale
     config.training_reward.foot_landing = -.4*scale
+    config.training_reward.slip = -2.*scale
 
 
 def normal_foot_terms(task, command, flat):

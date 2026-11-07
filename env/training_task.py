@@ -179,6 +179,14 @@ class Go2Task:
         lever = feet-self.robot.data.body_link_pos_w[:, self.calf_ids]
         foot_velocity = foot_velocity+torch.cross(omega, lever, dim=-1)
         slip = (contact*foot_velocity[:, :, :2].square().sum(-1)).mean(-1)
+        if self.weights.foot_landing:
+            from env.posture import foot_velocities_world
+            local_x = r.root_link_pos_w[:, 0]-self.env.scene.env_origins[:, 0]+self.config.terrain.spawn_x
+            supported = self.env.scene['feet'].data.force[:, self.foot_order, 2].abs()>self.config.gait.contact_force
+            point_velocity = foot_velocities_world(self, flat_contact_point=True)
+            flat_slip = (supported*point_velocity[..., :2].square().sum(-1)).mean(-1)
+            # 与平地审计一致，惩罚足底接触点估计速度；粗糙地形继续使用原足端中心近似。
+            slip = torch.where(flat_mask(self, local_x), flat_slip, slip)
         error = (r.root_link_lin_vel_b[:, :2]-command[:, :2]).square().sum(-1)
         angular = r.root_link_ang_vel_b
         limits = r.soft_joint_pos_limits
