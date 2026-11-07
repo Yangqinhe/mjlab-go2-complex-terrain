@@ -778,3 +778,16 @@ PPO1045（134413_student_ppo_seed85015）3cm为4/4、RMSE0.0688；9cm为3/4、�
 新增集中配置nominal_screen_seeds，当前显式设置54000～54004，标称筛查每个所需高度覆盖20条路线；原独立fresh验收集保持未使用，最终六档固定120+fresh120标准不变。默认仍为单seed以兼容已有控制任务，当前goal恢复配置明确启用五seed。旧评分无法与新范围直接比较，因此归档后清空best_screen、重测当前最佳基线，随后按同一范围评估候选。没有把失败数据丢弃或放宽任何单项门槛。
 
 第24批训练已完整保存，pending_run接回复核；代码与切换前状态位于resume_history/20261107_152336_multiseed_selection，原initial及第24批控制侧产物在恢复历史另存。恢复日志multiseed_selection_resume.log，实际子进程命令已确认包含五个seed。语法检查通过，此次只调整选模覆盖范围，训练任务/奖励/模型接口未改变，域随机化仍关闭。完整goal尚未达到。
+
+
+## 2026-11-07：冻结楼梯专家仅提供复杂地形辅助标签，保留正常平地参考
+
+五seed筛查未能稳定通过9cm，上楼失败居多。用旧学生195在当前物理地形/侧墙中作只读对照，但保持其原相机及group0地形射线输入：9cm与20cm均4/4完成，vx RMSE分别0.0354/0.0670，最大腾空均0.04s。报告legacy_terrain_reference_check.json明确deployment_validation=false；这只证明可用训练参考，不证明当前D435i学生完成。旧195平地外八字仍不接受，不能直接作为最终策略。
+
+新增可选terrain-reference，仅允许nominal-gait且strength=0：非平地采用冻结195的同状态动作标签，平地沿用945正常步态参考。学生执行动作始终由当前真实D435i深度+本体网络采样，标签不直接下发；不添加特权输入、地形标志或额外观测，融合176→12关节及PD接口不变。旧专家用原相机、只看地形；学生仍看当前实际地形/墙体。平地参考视觉网络和学生逐参数一致、相机配置及可见组一致才共享已有视觉特征，避免多加一套相机；初始化校验动作缩放、kp/kd及控制频率一致。
+
+PPO损失和KL早停保持原实现，通过既有anchor_coef=20加强辅助标签（此前为2），正常步态奖励和验收阈值不变。新增字段只记录冻结专家路径、SHA及非平地标签比例；模型CNN/GRU、本体历史/速度估计保持冻结，不引入依赖或替换部署权重。控制器从保存配置传递该可选参数，默认未启用的任务保持原行为。续训记录的anchor/lr/freeze从实际训练metadata读取，避免恢复旧批次时被下一批新配置误标。
+
+16环境4次真实PPO更新覆盖非平地，数值异常0；actor仅MLP与log_std改变，视觉/历史/速度参数逐一核对不变。原冻结195 SHA仍1bb94242c4f80b7704daceaafee06ec594cbd0695fbe1563308ea8a36db22d10。验证terrain_reference_smoke_verification.json，实际训练日志terrain_reference_ppo_smoke_retry.log；首次检查发现CPU/CUDA比较位置不同已改为初始化在CPU比较后重跑通过。此冒烟不是性能验收。
+
+切换前代码/状态保存在resume_history/20261107_154418_terrain_expert；第25批原完整权重和控制侧产物另存恢复历史，pending_run仍按原筛查复核。恢复日志terrain_reference_resume.log；下一训练子进程启用该辅助，域随机化保持关闭。五seed选模、六档固定120+fresh120、正常平地和最终同权重视频实际复核要求均未降低，goal active。

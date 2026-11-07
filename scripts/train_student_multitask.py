@@ -83,6 +83,7 @@ def main():
     p.add_argument('--normal-foot-scale',type=float,default=0.)
     p.add_argument('--front-posture-scale',type=float,default=0.)
     p.add_argument('--reference',default=str(REFERENCE))
+    p.add_argument('--terrain-reference',help='仅在标称复杂地形使用冻结专家标签；平地仍保留正常步态参考')
     p.add_argument('--visual',default=str(VISUAL))
     p.add_argument('--free-reference',default=str(FREE_REFERENCE))
     p.add_argument('--free-anchor-weight',type=float,default=.5)
@@ -104,12 +105,18 @@ def main():
     if not (0<args.strength<=1 or (args.strength==0 and args.nominal_gait)):
         p.error('只有显式nominal-gait阶段允许strength=0，不能将其视作域随机化完成')
     if args.flat_gait_only and not (args.nominal_gait and args.strength==0):p.error('flat-gait-only仅用于关闭随机化的标称步态课程')
+    if args.terrain_reference and not (args.nominal_gait and args.strength==0):
+        p.error('terrain-reference仅用于关闭随机化的标称步态恢复')
     torch.set_num_threads(1)
     if args.nominal_gait:args.free_reference=args.reference
     reference,source,reference_saved=load_policy(args.reference)
     reference.requires_grad_(False)
     free_reference,_,_=load_policy(args.free_reference)
     free_reference.requires_grad_(False)
+    terrain_reference=None
+    if args.terrain_reference:
+        terrain_reference,terrain_source,terrain_saved=load_policy(args.terrain_reference)
+        terrain_reference.requires_grad_(False)
     saved=torch.load(args.resume or args.reference,map_location='cuda:0',weights_only=False)
     training=TrainConfig(**saved['train_config'])
     training.horizon=args.horizon;training.batch_size=8192;training.epochs=5
@@ -123,6 +130,12 @@ def main():
         # 恢复195共享控制、本体/速度网络；只接入已适应D435i的视觉分支，不混淆来源。
         state={k.removeprefix('visual_encoder.'):v for k,v in visual['actor'].items() if k.startswith('visual_encoder.')}
         actor.visual_encoder.load_state_dict(state)
+    if terrain_reference is not None:
+        # 平地参考与学生的视觉网络冻结且逐参数一致，可共享实际视觉特征，避免额外相机。
+        assert all(torch.equal(v.cpu(),reference.visual_encoder.state_dict()[k].cpu())
+                   for k,v in actor.visual_encoder.state_dict().items()), '平地视觉参数不一致，不能共享特征'
+        for name in ('action_scale','kp','kd','physics_dt','decimation'):
+            assert getattr(terrain_source,name)==getattr(source,name), f'专家控制配置不同：{name}'
     actor.visual_encoder.requires_grad_(False)
     if args.freeze_proprio:
         actor.history.requires_grad_(False);actor.velocity_head.requires_grad_(False)
@@ -137,6 +150,9 @@ def main():
         agent.actor_optimizer.state.pop(agent.actor.log_std,None)
     with torch.no_grad():agent.actor.log_std.add_(torch.log(torch.tensor(args.std)/agent.actor.log_std.exp().mean()))
     route_cfg,free_cfg=task_configs(source,args.strength,args.route_envs,args.free_envs,args.seed,flat_gait=args.flat_gait_only)
+    if terrain_reference is not None:
+        assert asdict(route_cfg.camera)==asdict(source.camera), '共享平地视觉特征需要相同的相机配置'
+        assert reference_saved['env_config']['terrain'].get('surroundings'), '平地参考需要相同可见几何组'
     if not args.nominal_gait:free_cfg.command.stop_script_fraction=args.stop_script_fraction
     if args.front_posture_scale:
         from env.posture import configure_front_posture
@@ -154,6 +170,8 @@ def main():
                   route_envs=args.route_envs,free_envs=args.free_envs,strength=args.strength,
                   arguments=vars(args),numerical_failures=0,
                   normal_gait_reward_revision='stance_speed_tail_v3',
+                  terrain_reference=args.terrain_reference,
+                  terrain_reference_sha256=(hashlib.sha256(Path(args.terrain_reference).read_bytes()).hexdigest() if args.terrain_reference else None),
                   nominal_hip_prior=dict(enabled=args.nominal_gait,neutral_target=args.flat_gait_only,limit_rad=route_cfg.training_reward.front_hip_deadband,
                     application='平地参考标签，执行动作不裁剪，约束服从PPO KL早停'))
     save_json(folder/'metadata.json',metadata);print(f'RUN_DIR={folder}',flush=True)
@@ -170,9 +188,11 @@ def main():
         route.reset()
         visuals=[VisualRuntime(t,agent.actor.visual_encoder) for t in tasks]
         free_reference_visual=VisualRuntime(free,free_reference.visual_encoder)
-        reference_visual=VisualRuntime(route,reference.visual_encoder,
-            DepthSensor(route,DepthConfig(**reference_saved['env_config'].get('camera',{})),
-                geometry_groups=[0,4] if reference_saved['env_config']['terrain'].get('surroundings') else [0],randomize=False))
+        route_expert=terrain_reference if terrain_reference is not None else reference
+        route_expert_saved=terrain_saved if terrain_reference is not None else reference_saved
+        reference_visual=VisualRuntime(route,route_expert.visual_encoder,
+            DepthSensor(route,DepthConfig(**route_expert_saved['env_config'].get('camera',{})),
+                geometry_groups=[0,4] if route_expert_saved['env_config']['terrain'].get('surroundings') else [0],randomize=False))
         torch.manual_seed(args.seed)
         deployment=deployment_config(route);deployment['proprio_only']=False
         save_json(folder/'deployment.json',deployment)
@@ -181,7 +201,7 @@ def main():
                              torch.full((args.free_envs,1),args.free_std_scale,device='cuda:0')])
         begin=time.monotonic()
         for iteration in range(start+1,start+args.iterations+1):
-            sums=[dict(reward=0.,episodes=0,successes=0,falls=0,width_reward=0.,slip_reward=0.,touchdown_velocity_reward=0.,stance_speed_reward=0.) for _ in tasks]
+            sums=[dict(reward=0.,episodes=0,successes=0,falls=0,width_reward=0.,slip_reward=0.,touchdown_velocity_reward=0.,stance_speed_reward=0.,terrain_reference_fraction=0.) for _ in tasks]
             for _ in range(args.horizon):
                 with torch.no_grad():
                     states=[];critics=[]
@@ -194,7 +214,16 @@ def main():
                     state=torch.cat(states);critic_state=torch.cat(critics)
                     action,sample=agent.sample_batch(state,critic_state,std_scale=std_scale)
                     ref_state,_=route.inputs(reference_visual.latent)
-                    target=reference(ref_state)[0]
+                    target=route_expert(ref_state)[0]
+                    if terrain_reference is not None:
+                        local_x=(route.robot.data.root_link_pos_w[:,0]-route.env.scene.env_origins[:,0]
+                                 +route.config.terrain.spawn_x)
+                        normal_state,_=route.inputs(visuals[0].latent)
+                        normal_target=reference(normal_state)[0]
+                        # 仅切换辅助标签；执行动作始终来自当前学生，部署不依赖旧专家。
+                        terrain_mask=~flat_mask(route,local_x)
+                        target=torch.where(terrain_mask[:,None],target,normal_target)
+                        sums[0]['terrain_reference_fraction']+=terrain_mask.float().mean().item()
                     free_ref_state,_=free.inputs(free_reference_visual.latent)
                     free_target=free_reference(free_ref_state)[0]
                     if args.nominal_gait:
@@ -259,6 +288,8 @@ def main():
                     row[name+'_slip_reward']=sums[index]['slip_reward']/args.horizon
                     row[name+'_touchdown_velocity_reward']=sums[index]['touchdown_velocity_reward']/args.horizon
                     row[name+'_stance_speed_reward']=sums[index]['stance_speed_reward']/args.horizon
+            if terrain_reference is not None:
+                row['terrain_reference_fraction']=sums[0]['terrain_reference_fraction']/args.horizon
             append_csv(folder/'metrics.csv',row)
             with (folder/'train.log').open('a') as f:f.write(json.dumps(row)+'\n')
             if iteration==start+1 or (iteration-start)%10==0:print(json.dumps(row),flush=True)
@@ -268,7 +299,7 @@ def main():
                     task_configs=dict(route=asdict(route_cfg),free=asdict(free_cfg)),reference=args.reference,
                     exploration_std_scales=dict(route=args.route_std_scale,free=args.free_std_scale),
                     critic_free_task_marker=args.critic_task_marker,
-                    randomization_strength=args.strength)
+                    randomization_strength=args.strength,terrain_reference=args.terrain_reference)
                 if args.nominal_gait:
                     shutil.copyfile(folder/'checkpoints/latest.pt',folder/f'checkpoints/iteration_{iteration}.pt')
                 if iteration==start+args.iterations:

@@ -34,6 +34,7 @@ def main():
     parser.add_argument('--flat-anchor-coef',type=float,default=20.)
     parser.add_argument('--nominal-actor-lr',type=float,default=5e-6)
     parser.add_argument('--nominal-anchor-coef',type=float,default=2.)
+    parser.add_argument('--nominal-terrain-reference')
     parser.add_argument('--nominal-gait-first',action='store_true',help='先关闭随机化纠正四足步态，数值和视频复核通过才开放随机化')
     parser.add_argument('--require-normal-gait',action='store_true')
     parser.add_argument('--resume-controller',type=Path,help='恢复控制目录，保留选模与课程，并优先评估已完成的训练批次')
@@ -61,7 +62,7 @@ def main():
         args.flat_gait_first=recovered.get('nominal_substage')=='flat'
         args.require_normal_gait=recovered.get('require_normal_gait',False)
         for key,value in recovered.get('controller_config',{}).items():
-            if key in ('updates_per_round','nominal_actor_lr','nominal_anchor_coef','flat_anchor_coef','route_envs','free_envs','nominal_max_level','nominal_screen_seeds'):
+            if key in ('updates_per_round','nominal_actor_lr','nominal_anchor_coef','flat_anchor_coef','route_envs','free_envs','nominal_max_level','nominal_screen_seeds','nominal_terrain_reference'):
                 setattr(args,key,value)
         args.reference_checkpoint=recovered['reference']
         args.visual_source=recovered['visual_source']
@@ -120,7 +121,7 @@ def main():
                    phase='nominal_gait' if args.nominal_gait_first else 'training',
                    nominal_substage='flat' if args.flat_gait_first else 'complex',
                    controller_config={key:getattr(args,key) for key in ('updates_per_round','nominal_actor_lr',
-                       'nominal_anchor_coef','flat_anchor_coef','route_envs','free_envs','nominal_max_level','nominal_screen_seeds')},
+                       'nominal_anchor_coef','flat_anchor_coef','route_envs','free_envs','nominal_max_level','nominal_screen_seeds','nominal_terrain_reference')},
                    visual_source=args.visual_source,folder=str(folder),records=[],
                    goal=('先在标称环境纠正四足接触与落脚；数值和视频复核均通过后再训练域随机化' if args.nominal_gait_first
                          else '完整域随机化下六档固定120+独立120路线全完成、速度/60ms步态通过，33项变速停车及20/35/50度边界通过'))
@@ -330,6 +331,8 @@ def main():
             if args.front_posture_finetune:
                 arguments+=['--front-posture-scale',1. if args.flat_gait_first else min(1.,.1*round_id),'--free-anchor-weight',0.]
             if args.nominal_gait_first:arguments+=['--nominal-gait','--training-max-level',args.nominal_max_level]
+            if args.nominal_gait_first and args.nominal_terrain_reference:
+                arguments+=['--terrain-reference',args.nominal_terrain_reference]
             if args.flat_gait_first:arguments+=['--flat-gait-only','--route-std-scale',2.]
             if args.require_normal_gait:
                 arguments+=['--normal-foot-scale',1.,'--free-anchor-weight',0.]
@@ -382,7 +385,9 @@ def main():
                 continue
             accepted=result['score']>best_screen['score']
             record=dict(round=round_id,strength=strength,checkpoint=candidate,screen=result,
-                        selected=accepted,anchor=anchor,actor_lr=lr,freeze_proprio=freeze,candidate_screens=candidate_screens)
+                        selected=accepted,anchor=metadata['arguments']['anchor_coef'],
+                        actor_lr=metadata['arguments']['actor_lr'],freeze_proprio=metadata['arguments']['freeze_proprio'],
+                        terrain_reference=metadata.get('terrain_reference'),candidate_screens=candidate_screens)
             state['records'].append(record)
             state.pop('pending_run',None)
             if accepted:
