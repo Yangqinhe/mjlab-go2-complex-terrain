@@ -8,7 +8,8 @@ from env.gait import flat_terrain_mask
 
 @torch.no_grad()
 def collect_sequences(task, visual, teacher, student, steps, beta, action_noise_std=0., held_terrain_guide=False,
-                      flat_reference_visual=None, flat_weight=1.):
+                      flat_reference_visual=None, flat_weight=1.,
+                      terrain_reference_visual=None, flat_reference_policy=None):
     n, device = task.config.num_envs, task.device
     # 图像仅在实际更新时入库；策略步只保存两帧索引，避免50Hz重复存整幅图。
     frames = [visual.pair[:, 0].clone(), visual.pair[:, 1].clone()]
@@ -24,15 +25,24 @@ def collect_sequences(task, visual, teacher, student, steps, beta, action_noise_
     flat_samples=0
     for _ in range(steps):
         states, critic = task.inputs()
-        if held_terrain_guide:
+        if flat_reference_visual is not None:
+            local_x=task.robot.data.root_link_pos_w[:,0]-task.env.scene.env_origins[:,0]+task.config.terrain.spawn_x
+            is_flat=flat_terrain_mask(task, local_x)
+            flat_samples+=int(is_flat.sum())
+        if terrain_reference_visual is not None:
+            # 两个冻结参考各用原相机和独立GRU；学生只接收自己的部署深度图。
+            terrain_z=terrain_reference_visual.latent
+            terrain_mu=teacher(torch.cat([states[:,:495],terrain_z],-1))[0]
+            flat_z=flat_reference_visual.latent
+            flat_mu=flat_reference_policy(torch.cat([states[:,:495],flat_z],-1))[0]
+            teacher_z=torch.where(is_flat[:,None],flat_z,terrain_z)
+            teacher_mu=torch.where(is_flat[:,None],flat_mu,terrain_mu)
+        elif held_terrain_guide:
             # 标签与实际采图/reset时序一致，冻结学生控制网络生成特权引导动作。
             fresh_z = teacher.terrain_encoder(states[:, 495:])
             if flat_reference_visual is not None:
                 # 平地保留源视觉特征；复杂地形才对齐教师高度编码。
-                local_x=task.robot.data.root_link_pos_w[:,0]-task.env.scene.env_origins[:,0]+task.config.terrain.spawn_x
-                is_flat=flat_terrain_mask(task, local_x)
                 fresh_z=torch.where(is_flat[:,None], flat_reference_visual.latent, fresh_z)
-                flat_samples+=int(is_flat.sum())
             held_teacher_z = torch.where(tick[:, None], fresh_z, held_teacher_z)
             teacher_z = held_teacher_z
             teacher_mu = student(torch.cat([states[:, :495], teacher_z], -1))[0]
@@ -55,6 +65,8 @@ def collect_sequences(task, visual, teacher, student, steps, beta, action_noise_
         updated = visual.update()
         if flat_reference_visual is not None:
             flat_reference_visual.update()
+        if terrain_reference_visual is not None:
+            terrain_reference_visual.update()
         tick = torch.full_like(tick, updated)
         if updated:
             frames.append(visual.pair[:, 1].clone())
@@ -69,6 +81,8 @@ def collect_sequences(task, visual, teacher, student, steps, beta, action_noise_
             visual.reset(ids)
             if flat_reference_visual is not None:
                 flat_reference_visual.reset(ids)
+            if terrain_reference_visual is not None:
+                terrain_reference_visual.reset(ids)
             frames.append(visual.pair[ids, 1].clone())
             fresh = torch.arange(len(ids), device=device)+frame_count
             previous[ids], current[ids] = fresh, fresh
