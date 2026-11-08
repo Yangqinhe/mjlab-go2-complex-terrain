@@ -33,6 +33,8 @@ def main():
     parser.add_argument('--sequence-batch',type=int,default=16)
     parser.add_argument('--training-levels',type=int,nargs='+',default=[0,6,9,12,15,17])
     parser.add_argument('--seed',type=int,default=90020)
+    parser.add_argument('--terrain-seed',type=int,default=56000,help='名义地形样本种子，动力学和相机随机化保持关闭')
+    parser.add_argument('--layouts',type=int,help='增加既有四类结构的静态地形样本，验收仍使用固定四布局配置')
     args=parser.parse_args()
     if args.resume and args.visual_init:parser.error('resume与visual-init分别用于续训和换教师初始化，不能同时指定')
     torch.set_num_threads(1)
@@ -69,7 +71,8 @@ def main():
         training_levels=tuple(args.training_levels))
     config.num_envs,config.seed=args.num_envs,args.seed
     config.randomization.enabled=False
-    config.terrain.seed=56000
+    config.terrain.seed=args.terrain_seed
+    if args.layouts is not None:config.terrain.layouts=args.layouts
     free_config=nominal_flat_training_config(config,args.free_envs,args.seed+1)
     folder=new_run('gait_student_distillation',config,training)
     metadata=dict(status='running',teacher=args.teacher,teacher_sha256=teacher_sha,parent=args.resume,
