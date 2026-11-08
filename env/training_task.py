@@ -67,6 +67,7 @@ class Go2Task:
         self.visited = torch.zeros(config.num_envs, 7, dtype=torch.bool, device=device)
         self.dt = config.physics_dt*config.decimation
         self.numerical_failures = 0
+        self.last_numerical_failure = None
         self.gait = GaitTracker(config.gait, config.num_envs, device, self.dt)
         self.schedule = VelocitySchedule(self) if config.command.mode != 'legacy' else None
         self.randomization = None
@@ -171,6 +172,9 @@ class Go2Task:
         numerical = NanGuard.detect_nans(self.env.sim.data)
         if numerical.any():
             ids = numerical.nonzero(as_tuple=False).flatten()
+            # 保留恢复前的原始异常值，区分状态、加速度、warmstart或传感器异常。
+            self.last_numerical_failure = {name:getattr(self.env.sim.data, name)[ids].clone()
+                for name in ('qpos','qvel','qacc','qacc_warmstart','sensordata','ctrl')}
             self.numerical_failures += len(ids)
             print(f'NUMERICAL_FAILURE env_ids={ids.tolist()} total={self.numerical_failures}', flush=True)
             # NaN比较不会触发姿态/高度终止。先恢复物理量，防止污染相机和末状态critic；

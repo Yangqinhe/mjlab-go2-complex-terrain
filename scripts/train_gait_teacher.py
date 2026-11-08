@@ -22,6 +22,10 @@ def main():
     parser.add_argument('--iterations',type=int,default=100)
     parser.add_argument('--actor-lr',type=float,default=5e-6)
     parser.add_argument('--stance-width-scale',type=float,help='仅调整平地站宽软成本；省略则沿用权重配置')
+    parser.add_argument('--freeze-proprio',action='store_true',help='保留已验证的历史编码与速度估计')
+    parser.add_argument('--reference',help='同状态动作软约束教师，省略则使用续训起点')
+    parser.add_argument('--anchor-coef',type=float,default=0.)
+    parser.add_argument('--anchor-max-level',type=int,default=15,help='只保留本档及更低档的参考动作')
     parser.add_argument('--training-levels',type=int,nargs='+',default=[0,6,9,12])
     parser.add_argument('--seed',type=int,default=90015)
     args=parser.parse_args()
@@ -30,9 +34,16 @@ def main():
     actor,config,saved=load_policy(args.resume)
     assert actor.mode=='teacher'
     actor.train();actor.requires_grad_(True)
+    if args.freeze_proprio:
+        actor.history.requires_grad_(False);actor.velocity_head.requires_grad_(False)
+    reference=None
+    if args.anchor_coef:
+        reference,_,_=load_policy(args.reference or args.resume)
+        assert reference.mode=='teacher'
+        reference.requires_grad_(False)
     training=TrainConfig(**saved['train_config'])
     training.horizon=64;training.batch_size=8192;training.actor_lr=args.actor_lr
-    training.critic_lr=3e-4;training.anchor_coef=0.;training.freeze_proprio=False
+    training.critic_lr=3e-4;training.anchor_coef=args.anchor_coef;training.freeze_proprio=args.freeze_proprio
     training.training_levels=tuple(args.training_levels)
     critic=PrivilegedCritic(training).to('cuda:0')
     critic.load_state_dict(saved['critic'])
@@ -63,6 +74,8 @@ def main():
         terrain.terrain_levels[:]=levels[torch.arange(args.route_envs,device='cuda:0')%len(levels)]
         terrain.env_origins[:]=terrain.terrain_origins[terrain.terrain_levels,terrain.terrain_types]
         route.reset()
+        anchor_weight=torch.cat([(terrain.terrain_levels<=args.anchor_max_level).float(),
+                                 torch.ones(args.free_envs,device='cuda:0')])
         deployment=deployment_config(route)
         start=saved['iteration'];total=saved.get('total_steps',0);began=time.monotonic()
         std_scale=torch.cat([torch.ones(args.route_envs,1,device='cuda:0'),
@@ -78,6 +91,10 @@ def main():
                         if index==1:value_state[:,-1]=-1.  # critic区分平地任务，Actor仍是原682维。
                         states.append(state);critics.append(value_state)
                     action,sample=agent.sample_batch(torch.cat(states),torch.cat(critics),std_scale=std_scale)
+                    if reference is not None:
+                        # 一个一致的教师仅提供软约束；高于保留档的动作仍由PPO独立学习。
+                        sample['anchor_mu']=reference(torch.cat(states))[0]
+                        sample['anchor_weight']=anchor_weight
                     rewards=[];dones=[];terms=[];next_critics=[];results=[]
                     for index,(task,command) in enumerate(zip(tasks,action.split([args.route_envs,args.free_envs]))):
                         # NanGuard会恢复异常世界，提前保留实际输入状态，供碰撞/动作异常定位。
@@ -88,8 +105,14 @@ def main():
                         if len(failed):
                             terrain_state=task.env.scene.terrain
                             step=task.env.common_step_counter
+                            raw_state=task.last_numerical_failure
+                            raw_path=folder/f'numerical_failure_{iteration}_{index}_{step}.pt'
+                            torch.save({name:value.cpu() for name,value in raw_state.items()},raw_path)
                             save_json(folder/f'numerical_failure_{iteration}_{index}_{step}.json',dict(
                                 iteration=iteration,task='route' if index==0 else 'free',
+                                raw_state_file=str(raw_path),
+                                nonfinite_counts={name:int((~torch.isfinite(value)).sum())
+                                    for name,value in raw_state.items()},
                                 global_step=step,episode_steps=task.env.episode_length_buf[failed].cpu().tolist(),
                                 env_ids=failed.cpu().tolist(),
                                 levels=terrain_state.terrain_levels[failed].cpu().tolist(),
@@ -134,6 +157,8 @@ def main():
                 extra=dict(task=route,deployment=deployment,total_steps=total,
                            task_configs=dict(route=asdict(config),free=asdict(free_config)),
                            privileged_input=True,student_acceptance=False,critic_free_task_marker=True)
+                extra.update(anchor_reference=(args.reference or args.resume) if reference is not None else None,
+                             anchor_max_level=args.anchor_max_level)
                 save_checkpoint(folder/f'checkpoints/iteration_{iteration:06d}.pt',agent,iteration,config,training,'teacher',**extra)
                 save_checkpoint(folder/'checkpoints/latest.pt',agent,iteration,config,training,'teacher',**extra)
                 if iteration==start+args.iterations:
