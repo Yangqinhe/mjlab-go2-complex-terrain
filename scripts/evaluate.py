@@ -168,7 +168,15 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                         records[-1]['gait']['all_max_flight_local_x'] = (
                             flight_local_x[i].item() if flight_max[i].item() > 0 else None)
                     complete |= done
+                    if step % 500 == 0:
+                        active=(~complete).nonzero().flatten()[:8]
+                        print('EVALUATION_PROGRESS='+json.dumps(dict(seed=terrain_seed,
+                            step=step+1,seconds=(step+1)*task.dt,completed=int(complete.sum()),
+                            total=num_envs,active_worlds=active.cpu().tolist(),
+                            local_x=local_x[active].cpu().tolist(),
+                            vx=info['velocity'][active].cpu().tolist())),flush=True)
                     if complete.all():
+                        print(f'EVALUATION_SEED_FINISHED={terrain_seed}',flush=True)
                         break
                     ids = done.nonzero(as_tuple=False).flatten()
                     if len(ids):
