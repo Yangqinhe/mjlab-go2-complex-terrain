@@ -65,7 +65,7 @@ def normal_foot_terms(task, command, flat):
     excess = ((velocity/MAX_STANCE_POINT_SPEED).square().sum(-1)-1).clamp(min=0).square()
     settled = task.env.episode_length_buf*task.dt > .5
     stance_speed = w.foot_landing*(excess*contact).sum(-1)*active*settled
-    return dict(normal_stance_speed=stance_speed, normal_touchdown_velocity=w.foot_landing*touchdown_speed*active, normal_stance_width=w.foot_landing*width_error*active, all_hip_posture=w.all_hip_deviation*hip*active,
+    return dict(normal_stance_speed=stance_speed, normal_touchdown_velocity=w.foot_landing*touchdown_speed*active, normal_stance_width=w.foot_landing*w.stance_width_scale*width_error*active, all_hip_posture=w.all_hip_deviation*hip*active,
                 normal_foot_landing=w.foot_landing*(landing+lateral)*active)
 
 

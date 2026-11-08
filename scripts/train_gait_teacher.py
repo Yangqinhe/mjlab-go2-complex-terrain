@@ -21,6 +21,7 @@ def main():
     parser.add_argument('--free-envs',type=int,default=256)
     parser.add_argument('--iterations',type=int,default=100)
     parser.add_argument('--actor-lr',type=float,default=5e-6)
+    parser.add_argument('--stance-width-scale',type=float,help='仅调整平地站宽软成本；省略则沿用权重配置')
     parser.add_argument('--training-levels',type=int,nargs='+',default=[0,6,9,12])
     parser.add_argument('--seed',type=int,default=90015)
     args=parser.parse_args()
@@ -44,6 +45,8 @@ def main():
     config.num_envs,config.seed=args.route_envs,args.seed
     config.randomization.enabled=False
     config.terrain.seed=56000
+    if args.stance_width_scale is not None:
+        config.training_reward.stance_width_scale=args.stance_width_scale
     free_config=nominal_flat_training_config(config,args.free_envs,args.seed+1)
     folder=new_run('gait_teacher_multitask',config,training)
     metadata=dict(status='running',parent=args.resume,arguments=vars(args),

@@ -61,6 +61,7 @@ class TrainingRewardConfig:
     # 后续前腿微调专用；原任务和历史checkpoint默认关闭。
     all_hip_deviation: float = 0.
     foot_landing: float = 0.
+    stance_width_scale: float = 1.  # 独立调整站宽软成本，旧配置保持原奖励。
     foot_home_x: tuple[float, ...] = (.1934, .1934, -.1934, -.1934)
     foot_home_y: tuple[float, ...] = (.142, -.142, .142, -.142)
     foot_landing_x_tolerance: float = .16
