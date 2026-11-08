@@ -22,6 +22,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--teacher',required=True)
     parser.add_argument('--resume',help='恢复本脚本或复用已有学生视觉；共享网络始终来自教师')
+    parser.add_argument('--visual-init',help='换教师时仅复用已有学生视觉，重建优化器和本阶段计数')
     parser.add_argument('--num-envs',type=int,default=64)
     parser.add_argument('--free-envs',type=int,default=64)
     parser.add_argument('--iterations',type=int,default=100)
@@ -33,6 +34,7 @@ def main():
     parser.add_argument('--training-levels',type=int,nargs='+',default=[0,6,9,12,15,17])
     parser.add_argument('--seed',type=int,default=90020)
     args=parser.parse_args()
+    if args.resume and args.visual_init:parser.error('resume与visual-init分别用于续训和换教师初始化，不能同时指定')
     torch.set_num_threads(1)
     torch.manual_seed(args.seed)
     teacher,config,teacher_saved=load_policy(args.teacher)
@@ -44,6 +46,10 @@ def main():
     training=TrainConfig(**teacher_saved['train_config'])
     student=PerceptiveActor('student',training).to('cuda:0')
     if saved:student.load_state_dict(saved['actor'])
+    if args.visual_init:
+        visual_saved=torch.load(args.visual_init,map_location='cuda:0',weights_only=False)
+        student.visual_encoder.load_state_dict({k.removeprefix('visual_encoder.'):v
+            for k,v in visual_saved['actor'].items() if k.startswith('visual_encoder.')})
     student.copy_common(teacher)
     student.requires_grad_(False)
     student.visual_encoder.requires_grad_(True)
@@ -67,6 +73,7 @@ def main():
     free_config=nominal_flat_training_config(config,args.free_envs,args.seed+1)
     folder=new_run('gait_student_distillation',config,training)
     metadata=dict(status='running',teacher=args.teacher,teacher_sha256=teacher_sha,parent=args.resume,
+        visual_initialization=args.visual_init,
         arguments=vars(args),teacher_privileged=True,student_privileged=False,
         student_goal_complete=False,randomization_enabled=False)
     save_json(folder/'metadata.json',metadata)
@@ -101,6 +108,7 @@ def main():
             if iteration%25==0 or iteration==start+args.iterations:
                 extra=dict(task=route,deployment=deployment,algorithm='gait_student_distillation',
                     teacher=args.teacher,teacher_sha256=teacher_sha,
+                    visual_initialization=args.visual_init,
                     source_teacher_iteration=teacher_saved['iteration'],
                     source_ppo_iteration=0,source_ppo_total_steps=0,source_visual_iteration=iteration,
                     privileged_input=False,student_acceptance=False,
