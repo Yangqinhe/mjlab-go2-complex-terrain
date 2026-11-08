@@ -80,7 +80,24 @@ def main():
                     action,sample=agent.sample_batch(torch.cat(states),torch.cat(critics),std_scale=std_scale)
                     rewards=[];dones=[];terms=[];next_critics=[];results=[]
                     for index,(task,command) in enumerate(zip(tasks,action.split([args.route_envs,args.free_envs]))):
+                        # NanGuard会恢复异常世界，提前保留实际输入状态，供碰撞/动作异常定位。
+                        before_qpos=task.env.sim.data.qpos.clone()
+                        before_qvel=task.env.sim.data.qvel.clone()
                         reward,terminated,truncated,info=task.step(command)
+                        failed=info['numerical_failure'].nonzero().flatten()
+                        if len(failed):
+                            terrain_state=task.env.scene.terrain
+                            step=task.env.common_step_counter
+                            save_json(folder/f'numerical_failure_{iteration}_{index}_{step}.json',dict(
+                                iteration=iteration,task='route' if index==0 else 'free',
+                                global_step=step,episode_steps=task.env.episode_length_buf[failed].cpu().tolist(),
+                                env_ids=failed.cpu().tolist(),
+                                levels=terrain_state.terrain_levels[failed].cpu().tolist(),
+                                layouts=terrain_state.terrain_types[failed].cpu().tolist(),
+                                qpos_before=before_qpos[failed].cpu().tolist(),
+                                qvel_before=before_qvel[failed].cpu().tolist(),
+                                action=command[failed].cpu().tolist(),
+                                physics_dt=task.config.physics_dt,control_dt=task.dt))
                         _,next_value=task.inputs()
                         if index==1:next_value[:,-1]=-1.
                         rewards.append(reward);dones.append(terminated|truncated);terms.append(terminated)
@@ -125,7 +142,8 @@ def main():
         save_json(folder/'metadata.json',metadata)
         print('GAIT_TEACHER_MULTITASK_FINISHED='+str(folder),flush=True)
     except BaseException as error:
-        metadata.update(status='failed',error=str(error));save_json(folder/'metadata.json',metadata);raise
+        metadata.update(status='failed',error=str(error),numerical_failures=sum(t.numerical_failures for t in tasks))
+        save_json(folder/'metadata.json',metadata);raise
     finally:
         for task in tasks:task.close()
 
