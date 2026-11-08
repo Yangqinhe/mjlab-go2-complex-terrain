@@ -1,4 +1,4 @@
-"""同一学生PPO联合采集复杂路线和自由速度，用195同状态动作约束保留步态。"""
+"""学生PPO联合采集路线和平地/自由速度，用同状态参考动作软约束保留步态。"""
 
 import argparse
 from copy import deepcopy
@@ -81,6 +81,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--resume')
     p.add_argument('--nominal-gait',action='store_true')
+    p.add_argument('--preserve-reference-actions',action='store_true',help='直接沿用参考动作，跳过标称阶段髋目标改写')
     p.add_argument('--flat-gait-only',action='store_true')
     p.add_argument('--training-max-level',type=int,choices=(0,6,9,12,15,17),default=17)
     p.add_argument('--normal-foot-scale',type=float,default=0.)
@@ -149,7 +150,8 @@ def main():
     agent=PPO(actor=actor,critic=critic,config=training,device='cuda:0',
               actor_lr=training.actor_lr,critic_lr=training.critic_lr,gamma=training.gamma,
               lmbda=training.lmbda,epochs=training.epochs,epsilon=training.epsilon)
-    if args.resume and 'task_configs' in saved:
+    # 蒸馏与PPO的优化器参数不同；跨阶段继承权重，只有PPO续训恢复优化器。
+    if args.resume and saved['stage']=='student_ppo' and 'task_configs' in saved:
         agent.actor_optimizer.load_state_dict(saved['actor_optimizer'])
         agent.critic_optimizer.load_state_dict(saved['critic_optimizer'])
         for group in agent.actor_optimizer.param_groups:group['lr']=args.actor_lr
@@ -189,7 +191,7 @@ def main():
                   terrain_reference=args.terrain_reference,
                   normal_reference_visual_shared=share_normal_visual,
                   terrain_reference_sha256=(hashlib.sha256(Path(args.terrain_reference).read_bytes()).hexdigest() if args.terrain_reference else None),
-                  nominal_hip_prior=dict(enabled=args.nominal_gait,neutral_target=args.flat_gait_only,limit_rad=route_cfg.training_reward.front_hip_deadband,
+                  nominal_hip_prior=dict(enabled=args.nominal_gait and not args.preserve_reference_actions,neutral_target=args.flat_gait_only,limit_rad=route_cfg.training_reward.front_hip_deadband,
                     application='平地参考标签，执行动作不裁剪，约束服从PPO KL早停'))
     save_json(folder/'metadata.json',metadata);print(f'RUN_DIR={folder}',flush=True)
     tasks=[]
@@ -255,7 +257,7 @@ def main():
                         sums[0]['terrain_reference_fraction']+=weight.mean().item()
                     free_ref_state,_=free.inputs(free_reference_visual.latent)
                     free_target=free_reference(free_ref_state)[0]
-                    if args.nominal_gait:
+                    if args.nominal_gait and not args.preserve_reference_actions:
                         # 只改变平地参考标签，不裁剪执行动作。其余关节保留参考轨迹，姿态项仍服从PPO的KL早停。
                         target=target.clone();free_target=free_target.clone()
                         hip_ids=[i for i,name in enumerate(route.robot.joint_names) if name.endswith('_hip_joint')]
@@ -347,6 +349,7 @@ def main():
                     task_configs=dict(route=asdict(route_cfg),free=asdict(free_cfg)),reference=args.reference,
                     exploration_std_scales=dict(route=args.route_std_scale,free=args.free_std_scale),
                     critic_free_task_marker=args.critic_task_marker,
+                    preserve_reference_actions=args.preserve_reference_actions,
                     randomization_strength=args.strength,terrain_reference=args.terrain_reference,
                     terrain_reference_transition=args.terrain_reference_transition)
                 if args.nominal_gait:
