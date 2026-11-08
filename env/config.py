@@ -108,6 +108,7 @@ class EnvConfig:
     kd: float = 2.0
     action_scale: float = 0.5
     height_scan_clip: float = 1.0
+    height_scan_update_steps: int = 1
     base_height: float = 0.30
     tracking_weight: float = 1.5
     tracking_error_scale: float = 0.1

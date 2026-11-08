@@ -198,6 +198,7 @@ def evaluate(checkpoint, num_envs=4, seeds=(10000,), level=0, device='cuda:0',
                   env_config_override=env_config,
                   video_world_index=video_env_index if video else None,
                   video_hide_surroundings=bool(video and video_hide_surroundings),
+                  privileged_input=actor.mode=='teacher',
                   terrain_obstacles=original.terrain.obstacles,
                   stair_height=original.terrain.step_height(level/max(original.terrain.levels-1, 1))
                                if original.terrain.obstacles else 0.,

@@ -53,6 +53,11 @@ class Go2Task:
         x, y = torch.meshgrid(torch.linspace(-.3, 1.3, 17, device=device),
                               torch.linspace(-.5, .5, 11, device=device), indexing="ij")
         self.scan_xy = torch.stack([x.flatten(), y.flatten()], -1)
+        # 特权教师可模拟相机采样周期；critic仍使用每个控制步的真实高度。
+        self.height_cache = (torch.zeros(config.num_envs, len(self.scan_xy), device=device)
+                             if config.height_scan_update_steps > 1 else None)
+        self.height_cache_valid = torch.zeros(config.num_envs, dtype=torch.bool, device=device)
+        self.height_cache_tick = -1
         self.history = torch.zeros(config.num_envs, 10, 45, device=device)
         self.previous_action = torch.zeros(config.num_envs, 12, device=device)
         self.previous_foot = torch.zeros(config.num_envs, 4, 3, device=device)
@@ -116,8 +121,18 @@ class Go2Task:
         progress = ((pos[:, 0]-self.env.scene.env_origins[:, 0]) /
                     (self.config.terrain.length-self.config.terrain.spawn_x)).clamp(-1, 1)
         p = self.proprio()
+        actor_heights = heights
+        if visual_latent is None and self.height_cache is not None:
+            tick = self.env.common_step_counter//self.config.height_scan_update_steps
+            if tick != self.height_cache_tick:
+                self.height_cache.copy_(heights)
+                self.height_cache_tick = tick
+            else:
+                self.height_cache.copy_(torch.where(self.height_cache_valid[:, None], self.height_cache, heights))
+            self.height_cache_valid.fill_(True)
+            actor_heights = self.height_cache
         states = torch.cat([p, self.history.flatten(1),
-                            heights if visual_latent is None else visual_latent], -1)
+                            actor_heights if visual_latent is None else visual_latent], -1)
         critic = torch.cat([p, r.root_link_lin_vel_b, heights, contact.float(),
                             foot_height, progress[:, None]], -1)
         return states, critic
@@ -130,6 +145,7 @@ class Go2Task:
         if move_up is not None and self.curriculum:
             terrain.update_env_origins(ids, move_up, ~move_up)
         self.env.reset(env_ids=ids)
+        self.height_cache_valid[ids] = False
         self.previous_action[ids] = 0
         self.yaw_error_sum[ids] = 0
         if self.schedule is not None:

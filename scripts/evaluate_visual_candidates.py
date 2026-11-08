@@ -1,4 +1,4 @@
-"""先检查视觉候选的正常平地步态，再用实际深度输入评估指定高度完整路线。"""
+"""先查正常平地再查完整路线，明确区分视觉学生与中间特权教师。"""
 
 import argparse
 import json
@@ -16,14 +16,19 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run',type=Path,required=True)
     parser.add_argument('--iterations',type=int,nargs='+',required=True)
-    parser.add_argument('--route-config',required=True)
+    parser.add_argument('--route-config')
+    parser.add_argument('--policy-mode',choices=('student','teacher'),default='student')
     parser.add_argument('--level',type=int,default=9)
     parser.add_argument('--max-vx-rmse',type=float,default=.1)
     parser.add_argument('--seeds',type=int,nargs='+',default=[54000,54001,54002,54003,54004])
     args=parser.parse_args()
-    folder=args.run.resolve();status_path=folder/'visual_acceptance.json'
+    privileged=args.policy_mode=='teacher'
+    if not privileged and not args.route_config:
+        parser.error('学生候选需要显式route-config；教师默认使用自身高度采样配置')
+    folder=args.run.resolve();status_path=folder/('teacher_acceptance.json' if privileged else 'visual_acceptance.json')
     state=dict(status='running',runner_pid=os.getpid(),run=str(folder),
-        arguments={**vars(args),'run':str(folder)},privileged_input=False,records=[])
+        arguments={**vars(args),'run':str(folder)},privileged_input=privileged,
+        deployment_validation=not privileged,records=[])
 
     def save():save_json(status_path,state)
 
@@ -38,10 +43,12 @@ def main():
         if code:raise RuntimeError(f'{label}失败，见{log}')
         return log.read_text()
 
-    save();print('VISUAL_ACCEPTANCE_STATUS='+str(status_path),flush=True)
+    prefix='TEACHER' if privileged else 'VISUAL'
+    save();print(prefix+'_ACCEPTANCE_STATUS='+str(status_path),flush=True)
     try:
         for iteration in args.iterations:
-            checkpoint=folder/f'checkpoints/iteration_{iteration}.pt'
+            name=f'iteration_{iteration:06d}.pt' if privileged else f'iteration_{iteration}.pt'
+            checkpoint=folder/'checkpoints'/name
             state.update(stage=f'wait_{iteration}',child_pid=None);save()
             while not checkpoint.exists():
                 metadata=json.loads((folder/'metadata.json').read_text())
@@ -54,10 +61,14 @@ def main():
             normal=json.loads(normal_path.read_text())
             record=dict(iteration=iteration,checkpoint=str(checkpoint),normal_report=str(normal_path),
                 normal_passed=normal['passed'],normal_error=normal['error'],
-                privileged_input=False,adopted=False,passed=False)
+                privileged_input=privileged,deployment_validation=not privileged,adopted=False,passed=False)
+            if normal['policy_mode']!=args.policy_mode:
+                raise RuntimeError('候选角色与指定policy-mode不一致')
             if normal['passed']:
-                text=run('scripts.evaluate',['--checkpoint',checkpoint,'--num-envs',4,
-                    '--seeds',*args.seeds,'--level',args.level,'--env-config',args.route_config],
+                route_args=['--checkpoint',checkpoint,'--num-envs',4,
+                    '--seeds',*args.seeds,'--level',args.level]
+                if args.route_config:route_args+=['--env-config',args.route_config]
+                text=run('scripts.evaluate',route_args,
                     f'candidate_{iteration}_route{args.level}')
                 path=Path(next(line.split('=',1)[1] for line in text.splitlines() if line.startswith('EVALUATION=')))
                 report=json.loads(path.read_text())
@@ -69,10 +80,11 @@ def main():
                         and report['numerical_failure_rate']==0.
                         and report['episodes']==4*len(args.seeds)
                         and report['unique_layouts']==4*len(args.seeds)
-                        and report['visual_ablation']=='none' and not report['proprio_only']))
+                        and report['visual_ablation']=='none' and not report['proprio_only']
+                        and report['privileged_input']==privileged))
             state['records'].append(record);save();print(json.dumps(record),flush=True)
         state.update(status='finished',child_pid=None);save()
-        print('VISUAL_ACCEPTANCE_FINISHED='+str(status_path),flush=True)
+        print(prefix+'_ACCEPTANCE_FINISHED='+str(status_path),flush=True)
     except BaseException as error:
         state.update(status='failed',error=str(error));save();raise
 

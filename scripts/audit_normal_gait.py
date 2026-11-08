@@ -48,11 +48,12 @@ def main():
         air=torch.zeros(4,4,device='cuda:0');failed=torch.zeros(4,dtype=torch.bool,device='cuda:0')
         ids=[list(task.robot.joint_names).index(leg+'_hip_joint') for leg in LEGS]
         try:
-            visual=VisualRuntime(task,actor.visual_encoder)
+            visual=VisualRuntime(task,actor.visual_encoder) if actor.mode=='student' else None
             for step in range(args.steps):
                 with torch.no_grad():
-                    state,_=task.inputs(visual.latent)
-                    _,terminated,truncated,_=task.step(actor(state)[0]);visual.update()
+                    state,_=task.inputs(visual.latent if visual is not None else None)
+                    _,terminated,truncated,_=task.step(actor(state)[0])
+                    if visual is not None:visual.update()
                     failed|=terminated|truncated
                     contact=task.env.scene['feet'].data.force[:,task.foot_order,2].abs()>cfg.gait.contact_force
                     touchdown=contact & ~previous & (air>=cfg.gait.minimum_swing)
@@ -80,7 +81,8 @@ def main():
         finally:task.close()
     args.output.parent.mkdir(parents=True,exist_ok=True)
     if not positions:
-        save_json(args.output,dict(passed=False,error=100.,reason='没有有效行走样本',failed_environments=failed_total));return
+        save_json(args.output,dict(passed=False,error=100.,reason='没有有效行走样本',
+            policy_mode=actor.mode,privileged_input=actor.mode=='teacher',failed_environments=failed_total));return
     p=torch.cat(positions);h=torch.cat(hips).abs();c=torch.cat(contacts);v=torch.cat(speeds)
     home_x=torch.tensor(original.training_reward.foot_home_x)
     home_y=torch.tensor(original.training_reward.foot_home_y)
@@ -111,6 +113,7 @@ def main():
         +10*sum(max(0.,.3-r['duty_factor'])+max(0.,r['duty_factor']-.8) for r in foot_reports))
     error+=gate_penalty
     report=dict(selection_gate_penalty=gate_penalty,
+        policy_mode=actor.mode,privileged_input=actor.mode=='teacher',
         checkpoint=str(Path(args.checkpoint).resolve()),iteration=saved['iteration'],seeds=args.seeds,
         slip_measurement='平地球形足底接触点速度近似；不是接触求解器直接测量值',
         nominal=args.nominal,randomization_enabled=False if args.nominal else original.randomization.enabled,
